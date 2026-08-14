@@ -61,3 +61,9 @@ PINCODE_COLUMNS = [
     "pincode", "pin", "pin_code", "zip", "zip_code", 
     "Pincode", "chem_pincode", "doctor_pincode"
 ]
+
+# Potential city column names
+CITY_COLUMNS = [
+    "city", "chem_city", "chemist_city", "Doctor City", "doctor_city", 
+    "dr_city", "City", "CITY", "chemist_chem_city"
+]

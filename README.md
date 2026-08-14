@@ -74,7 +74,7 @@ C:\Users\u1204874\AppData\Local\Python\pythoncore-3.14-64\python.exe main.py
 ```
 
 ### Command-Line Customization
-You can override file paths, candidate size $K$, final selection $N$, city/pincode filters, and output folders:
+You can override file paths, candidate size $K$, final selection $N$, city filters, and output folders:
 
 ```bash
 python main.py \
@@ -82,14 +82,14 @@ python main.py \
   --chemist_file "Chemist_test_HCM.xlsx" \
   --candidate_k 50 \
   --final_n 5 \
-  --city 400 \
+  --city "Mumbai" \
   --output_dir "outputs"
 ```
 
-* **City / Pincode Prefix Filter (`--city`)**:
-  * Filter by first 3 digits of pincode (e.g. `--city 400` for Mumbai, `--city 560` for Bangalore, `--city 110` for Delhi). This avoids city name spelling mismatches.
-  * Supports multiple prefixes separated by commas (e.g. `--city 400,401`).
-  * Also supports textual city names (e.g. `--city "mumbai"`).
+* **City Filter (`--city`)**:
+  * Filter by city name (e.g. `--city "Mumbai"`). This accurately matches city names across metropolitan areas including suburbs/satellite regions (e.g., Kalyan, Dombivli, Thane) regardless of pincode prefix variations.
+  * Supports multiple comma-separated cities (e.g. `--city "Mumbai,Pune,Delhi"`).
+  * Also supports pincode prefix fallback (e.g. `--city 400`).
 * To change candidate size $K$ to other limits, use `--candidate_k 10`, `--candidate_k 20`, `--candidate_k 30`, or `--candidate_k 100`.
 
 ---
@@ -105,20 +105,19 @@ GraphHopper is a Java-based routing engine that reads the OpenStreetMap PBF file
 3. **Download Config**: Download the `config-example.yml` template, and disable Contraction Hierarchies (`profiles_ch: []`) to run in flexible memory mode.
 4. **Start Server**: Run the server by passing the India OSM PBF file and config:
    ```bash
-   c:\Users\u1204874\Downloads\chemist-hcp-v2\jdk17\jdk17.0.19_10\bin\java.exe -Xmx8g -Ddw.graphhopper.datareader.file="C:\Users\u1204874\Downloads\india-260708.osm.pbf" -jar graphhopper-web-10.0.jar server config-example.yml
+   .\jdk17\jdk17.0.19_10\bin\java.exe -Xmx8g -Ddw.graphhopper.datareader.file="india-latest.osm.pbf" -jar graphhopper-web-10.0.jar server config-example.yml
    ```
    This will start the routing service on `http://localhost:8989`.
 
 ### Execution
 Execute Phase 2 using the routing coordinator script pointing to the local GraphHopper server:
 ```bash
-# Using Python absolute path:
-C:\Users\u1204874\AppData\Local\Python\bin\python3.exe road_routing.py --routing_engine GraphHopper --osrm_endpoint http://localhost:8989
+python road_routing.py --routing_engine GraphHopper --osrm_endpoint http://localhost:8989 --city "Mumbai"
 ```
 
 ### CLI Customizations
 * `--input_file`: Path to the air-distance candidates file (default: `outputs/doctor_chemist_candidates_air_distance.csv`).
-* `--city`: Filter candidate pairs by first 3 digits of pincode or city prefix (e.g. `--city 400`).
+* `--city`: Filter candidate pairs by city name (e.g. `--city "Mumbai"` or `--city "Mumbai,Pune"`).
 * `--routing_engine`: Routing engine to use: `GraphHopper` or `OSRM` (default: `GraphHopper`).
 * `--osrm_endpoint`: HTTP endpoint of the local instance. Defaults to `http://localhost:8989` for GraphHopper, `http://localhost:5000` for OSRM.
 * `--final_n`: Target number of nearest chemists to select per doctor (default: `5`).
@@ -176,7 +175,7 @@ To recover GPS coordinates for chemist records with missing coordinates or to re
 
 ```bash
 # 1. Using Free OpenStreetMap Nominatim (Rate limited to 1 req/sec)
-python geocode_addresses.py --city 400
+python geocode_addresses.py --city "Mumbai"
 
 # 2. Using Google Maps Geocoding API (Fastest & most accurate for Indian addresses)
 python geocode_addresses.py --provider google --api_key "YOUR_API_KEY"
@@ -189,7 +188,7 @@ python geocode_addresses.py --provider locationiq --api_key "YOUR_API_KEY"
 * `--input_file`: Path to the file containing records to geocode (default: `outputs/invalid_chemist_records.csv`).
 * `--provider`: `nominatim` (default, free), `google`, or `locationiq`.
 * `--api_key`: API key for Google Maps or LocationIQ (can also use env vars `GOOGLE_MAPS_API_KEY` / `LOCATIONIQ_API_KEY`).
-* `--city`: Filter records to geocode by 3-digit pincode prefix or city name (e.g. `--city 400`).
+* `--city`: Filter records to geocode by city name (e.g. `--city "Mumbai"`). Supports comma-separated city names.
 * `--limit`: Limit number of records to process in the run (useful for testing, e.g. `--limit 50`).
 * `--output_file`: Destination path for geocoded records (default: `outputs/geocoded_chemist_records.csv`).
 

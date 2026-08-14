@@ -130,7 +130,7 @@ def main():
         "--city",
         type=str,
         default=None,
-        help="Filter candidate pairs by first 3 digits of pincode or city prefix (e.g. '--city 400')."
+        help="Filter candidate pairs by city name (e.g. '--city Mumbai'). Supports comma-separated city names."
     )
     
     args = parser.parse_args()
@@ -162,44 +162,65 @@ def main():
         logger.exception(f"Error loading inputs: {str(e)}")
         sys.exit(1)
         
-    # Optional city / pincode prefix filtering
+    # Optional city filtering by city name
     if args.city:
         city_filters = [c.strip() for c in str(args.city).split(",") if c.strip()]
-        logger.info(f"Applying city/pincode prefix filter: {city_filters}")
+        logger.info(f"Applying city filter: {city_filters}")
         mask = pd.Series(False, index=df.index)
         for filt in city_filters:
-            if filt.isdigit():
-                mask |= df["doctor_pincode"].astype(str).str.startswith(filt)
-            else:
-                filt_clean = "".join(c for c in filt.lower() if c.isalnum())
-                for col in ["Doctor City", "doctor_city", "chemist_chem_city", "chemist_city"]:
-                    if col in df.columns:
-                        mask |= df[col].astype(str).apply(
+            filt_clean = "".join(c for c in filt.lower() if c.isalnum())
+            if not filt_clean:
+                continue
+            filt_mask = pd.Series(False, index=df.index)
+            # Check city columns
+            for col in df.columns:
+                if "city" in col.lower():
+                    filt_mask |= df[col].astype(str).apply(
+                        lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
+                    )
+            # Address fallback
+            if not filt_mask.any():
+                for col in df.columns:
+                    if any(k in col.lower() for k in ["addr", "location"]):
+                        filt_mask |= df[col].astype(str).apply(
                             lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
                         )
+            # Numeric pincode prefix fallback if digits provided
+            if filt.isdigit():
+                for col in ["doctor_pincode", "chemist_pincode", "chemist_chem_pincode"]:
+                    if col in df.columns:
+                        filt_mask |= df[col].astype(str).str.startswith(filt)
+            mask |= filt_mask
+            
         df = df[mask].reset_index(drop=True)
-        logger.info(f"Retained {len(df)} candidate pairs matching city/pincode filter '{args.city}'.")
+        logger.info(f"Retained {len(df)} candidate pairs matching city filter '{args.city}'.")
         if len(df) == 0:
-            logger.error(f"No candidate pairs matched city/pincode filter '{args.city}'.")
+            logger.error(f"No candidate pairs matched city filter '{args.city}'.")
             sys.exit(1)
 
     # Enforce city compatibility filter to eliminate coordinate anomalies
     logger.info("Enforcing city consistency filter between doctor and chemist locations...")
     
     def check_city_match(row):
-        # 1. Check if first 3 digits of doctor and chemist pincode match
+        # 1. Textual city matching first (handles Kalyan/Thane/Mumbai where pincodes differ)
+        doc_city = normalize_city(row.get("Doctor City", row.get("doctor_city", "")))
+        chem_city = normalize_city(row.get("chemist_chem_city", row.get("chemist_city", "")))
+        if doc_city and chem_city:
+            if doc_city == chem_city:
+                return "exact"
+            if fuzzy_city_match(doc_city, chem_city):
+                return "fuzzy"
+        
+        # 2. Check if first 3 digits of doctor and chemist pincode match as fallback
         doc_pin = str(row.get("doctor_pincode", "")).strip()[:3]
         chem_pin = str(row.get("chemist_pincode", row.get("chemist_chem_pincode", ""))).strip()[:3]
         if doc_pin and chem_pin and len(doc_pin) == 3 and len(chem_pin) == 3 and doc_pin == chem_pin:
             return "pincode_prefix"
-        
-        # 2. Textual city matching fallback
-        doc_city = normalize_city(row.get("Doctor City", row.get("doctor_city", "")))
-        chem_city = normalize_city(row.get("chemist_chem_city", row.get("chemist_city", "")))
-        if doc_city == chem_city:
+            
+        # 3. If both city fields are blank, assume matching
+        if not doc_city and not chem_city:
             return "exact"
-        if fuzzy_city_match(doc_city, chem_city):
-            return "fuzzy"
+            
         return "mismatch"
         
     df["city_match_type"] = df.apply(check_city_match, axis=1)
