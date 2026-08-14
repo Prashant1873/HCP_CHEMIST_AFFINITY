@@ -101,8 +101,8 @@ def publish_to_results(
     file_list: Any = None
 ) -> None:
     """
-    Cleans the results directory (preserving .gitkeep) and copies the key final
-    output files from source_dir to results_dir.
+    Cleans the results directory (preserving .gitkeep) and copies ONLY the final
+    real road distance sheets and summary text files from source_dir to results_dir.
     """
     import shutil
     
@@ -123,24 +123,26 @@ def publish_to_results(
             
     logger.info(f"Cleaned '{results_dir}' folder.")
     
-    # 2. Determine files to publish
+    # 2. Determine files to publish: ONLY final road distance sheets and summary text files
     if file_list is None:
-        # Auto-detect final deliverables in source_dir, excluding temporary checkpoints
-        exclude_files = {
-            "road_distance_checkpoint.csv",
-            "geocoding_checkpoint.csv"
-        }
-        file_list = [
-            f for f in os.listdir(source_dir)
-            if f not in exclude_files and not f.endswith(".tmp") and os.path.isfile(os.path.join(source_dir, f))
-        ]
+        file_list = []
+        if os.path.exists(source_dir):
+            for f in os.listdir(source_dir):
+                # 1. Final road distance sheets (.csv and .xlsx)
+                is_final_sheet = f.startswith("final_doctor_nearest_") and (f.endswith(".csv") or f.endswith(".xlsx"))
+                # 2. Summary text files (.txt)
+                is_summary_txt = f.endswith("_summary.txt") or f == "run_summary.txt"
+                
+                if is_final_sheet or is_summary_txt:
+                    file_list.append(f)
         
     copied_count = 0
-    for fname in file_list:
+    for fname in sorted(file_list):
         src_path = os.path.join(source_dir, fname)
         if os.path.exists(src_path) and os.path.isfile(src_path):
             dst_path = os.path.join(results_dir, fname)
             shutil.copy2(src_path, dst_path)
+            logger.info(f"Published to results: {fname}")
             copied_count += 1
             
-    logger.info(f"Published {copied_count} key final output files to '{results_dir}' folder.")
+    logger.info(f"Published {copied_count} final deliverable files to '{results_dir}' folder.")
