@@ -14,5 +14,6 @@ graph-cache/
 *.jar
 *.pbf
 
-# Checkpoint files
-outputs/*checkpoint*.csv
+# Checkpoints & Generated Pipeline Outputs
+outputs/
+logs/
