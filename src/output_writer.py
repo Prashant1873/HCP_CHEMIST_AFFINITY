@@ -123,12 +123,16 @@ def publish_to_results(
             
     logger.info(f"Cleaned '{results_dir}' folder.")
     
-    # 2. Determine files to publish: ONLY final road distance sheets and summary text files
+    # 2. Determine files to publish: ONLY real road distance sheets and real summary text files
     if file_list is None:
         file_list = []
         if os.path.exists(source_dir):
             for f in os.listdir(source_dir):
-                # 1. Final road distance sheets (.csv and .xlsx)
+                # Strictly exclude simulated runs
+                if "simulated" in f.lower():
+                    continue
+                    
+                # 1. Final real road distance sheets (.csv and .xlsx)
                 is_final_sheet = f.startswith("final_doctor_nearest_") and (f.endswith(".csv") or f.endswith(".xlsx"))
                 # 2. Summary text files (.txt)
                 is_summary_txt = f.endswith("_summary.txt") or f == "run_summary.txt"
