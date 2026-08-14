@@ -227,7 +227,7 @@ def main():
         "--city",
         type=str,
         default=None,
-        help="Filter records to geocode by 3-digit pincode prefix or city (e.g. '--city 400')"
+        help="Filter records to geocode by city name (e.g. '--city Mumbai'). Supports comma-separated city names."
     )
     parser.add_argument(
         "--limit",
@@ -247,6 +247,12 @@ def main():
         default=50,
         help="Number of queries between checkpoint saves (default: 50)"
     )
+    parser.add_argument(
+        "--merge_into",
+        type=str,
+        default=None,
+        help="Optional: path to raw chemist spreadsheet (CSV/Excel) to merge newly resolved coordinates back into directly."
+    )
     
     args = parser.parse_args()
     
@@ -258,23 +264,36 @@ def main():
     df = pd.read_csv(args.input_file, dtype=str)
     logger.info(f"Loaded {len(df)} records.")
     
-    # Filter by city/pincode prefix if provided
+    # Filter by city name if provided
     if args.city:
         city_filters = [c.strip() for c in str(args.city).split(",") if c.strip()]
         logger.info(f"Applying city filter: {city_filters}")
         mask = pd.Series(False, index=df.index)
         for filt in city_filters:
-            if filt.isdigit():
-                pin_col = "chemist_pincode" if "chemist_pincode" in df.columns else "chem_pincode"
-                if pin_col in df.columns:
-                    mask |= df[pin_col].astype(str).str.startswith(filt)
-            else:
-                filt_clean = "".join(c for c in filt.lower() if c.isalnum())
-                for col in ["chem_city", "chemist_city"]:
-                    if col in df.columns:
-                        mask |= df[col].astype(str).apply(
+            filt_clean = "".join(c for c in filt.lower() if c.isalnum())
+            if not filt_clean:
+                continue
+            filt_mask = pd.Series(False, index=df.index)
+            # Check city columns
+            for col in df.columns:
+                if "city" in col.lower():
+                    filt_mask |= df[col].astype(str).apply(
+                        lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
+                    )
+            # Address fallback
+            if not filt_mask.any():
+                for col in df.columns:
+                    if any(k in col.lower() for k in ["addr", "location"]):
+                        filt_mask |= df[col].astype(str).apply(
                             lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
                         )
+            # Numeric pincode prefix fallback if digits provided
+            if filt.isdigit():
+                for pin_col in ["chemist_pincode", "chem_pincode", "pincode", "doctor_pincode"]:
+                    if pin_col in df.columns:
+                        filt_mask |= df[pin_col].astype(str).str.startswith(filt)
+            mask |= filt_mask
+            
         df = df[mask].reset_index(drop=True)
         logger.info(f"Retained {len(df)} records matching city filter '{args.city}'.")
         
@@ -391,6 +410,39 @@ def main():
             
     logger.info(f"Geocoding completed! Resolved {success_count}/{len(df)} addresses.")
     logger.info(f"Saved results to '{args.output_file}'.")
+
+    # Optional merge back into raw spreadsheet
+    if args.merge_into and os.path.exists(args.merge_into):
+        logger.info(f"Merging geocoded GPS coordinates back into '{args.merge_into}'...")
+        try:
+            from src.data_loader import load_data_file
+            raw_df = load_data_file(args.merge_into)
+            id_col_cand = [c for c in ["IQVIA ID", "chemist_id", "original_id"] if c in raw_df.columns]
+            id_col = id_col_cand[0] if id_col_cand else raw_df.columns[0]
+            lat_col = "chem_lat" if "chem_lat" in raw_df.columns else "latitude"
+            lon_col = "chem_long" if "chem_long" in raw_df.columns else "longitude"
+            
+            success_records = df[df["geocoded_status"] == "success"]
+            if not success_records.empty and id_col in success_records.columns:
+                mapping = success_records.set_index(id_col)[["geocoded_latitude", "geocoded_longitude"]].to_dict(orient="index")
+                merged_count = 0
+                for idx, r in raw_df.iterrows():
+                    rid = str(r[id_col]).strip()
+                    if rid in mapping:
+                        try:
+                            raw_df.at[idx, lat_col] = float(mapping[rid]["geocoded_latitude"])
+                            raw_df.at[idx, lon_col] = float(mapping[rid]["geocoded_longitude"])
+                            merged_count += 1
+                        except (ValueError, TypeError):
+                            continue
+                
+                if args.merge_into.endswith(".xlsx") or args.merge_into.endswith(".xls"):
+                    raw_df.to_excel(args.merge_into, index=False)
+                else:
+                    raw_df.to_csv(args.merge_into, index=False)
+                logger.info(f"Successfully updated {merged_count} GPS coordinates in '{args.merge_into}'.")
+        except Exception as e:
+            logger.warning(f"Failed to merge back into raw file '{args.merge_into}': {e}")
 
 
 if __name__ == "__main__":

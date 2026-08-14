@@ -65,7 +65,7 @@ def main():
         "--city", 
         type=str, 
         default=None, 
-        help="Filter dataset by first 3 digits of pincode or city prefix (e.g., '--city 400' for Mumbai pincodes starting with 400)."
+        help="Filter dataset by city name (e.g., '--city Mumbai' or '--city Mumbai,Pune'). Supports comma-separated city names."
     )
     parser.add_argument(
         "--pincode_fallback", 
@@ -77,6 +77,12 @@ def main():
         action="store_true", 
         default=False, 
         help="Optional fallback: approximate missing coordinates using pincode centroids (default: False, strict GPS only)."
+    )
+    parser.add_argument(
+        "--geocoded_chemist_file",
+        type=str,
+        default=None,
+        help="Path to address-geocoded chemist CSV (default: auto-detects outputs/geocoded_chemist_records.csv if present)."
     )
     
     args = parser.parse_args()
@@ -178,7 +184,57 @@ def main():
         warnings_list.append(msg)
         logger.info(msg)
     
-    # 5b. Optional pincode geocoding recovery (disabled by default to maintain strict GPS precision)
+    # 5b. Auto-integrate previously geocoded addresses if available
+    geocoded_file = args.geocoded_chemist_file or os.path.join(args.output_dir, "geocoded_chemist_records.csv")
+    if os.path.exists(geocoded_file):
+        try:
+            geo_df = pd.read_csv(geocoded_file, dtype=str)
+            if "geocoded_status" in geo_df.columns:
+                success_geo = geo_df[geo_df["geocoded_status"] == "success"].copy()
+                if len(success_geo) > 0 and not invalid_chem_df.empty:
+                    id_col_cand = [c for c in ["IQVIA ID", "chemist_id", "original_id"] if c in success_geo.columns]
+                    if id_col_cand:
+                        id_col_key = id_col_cand[0]
+                        geo_map = {}
+                        for _, g_row in success_geo.iterrows():
+                            cid = str(g_row[id_col_key]).strip()
+                            try:
+                                glat = float(g_row["geocoded_latitude"])
+                                glon = float(g_row["geocoded_longitude"])
+                                geo_map[cid] = (glat, glon)
+                            except (ValueError, TypeError):
+                                continue
+                                
+                        recovered_rows = []
+                        still_invalid_indices = []
+                        
+                        for idx, row in invalid_chem_df.iterrows():
+                            cid = str(row.get("chemist_id", row.get("IQVIA ID", ""))).strip()
+                            orig_id = str(row.get("original_id", "")).strip()
+                            match_key = cid if cid in geo_map else (orig_id if orig_id in geo_map else None)
+                            
+                            if match_key:
+                                row_copy = row.copy()
+                                row_copy["chemist_latitude"] = geo_map[match_key][0]
+                                row_copy["chemist_longitude"] = geo_map[match_key][1]
+                                row_copy["coordinate_source"] = "address_geocoded"
+                                if "rejection_reason" in row_copy:
+                                    row_copy = row_copy.drop(labels=["rejection_reason"])
+                                recovered_rows.append(row_copy)
+                            else:
+                                still_invalid_indices.append(idx)
+                                
+                        if recovered_rows:
+                            rec_df = pd.DataFrame(recovered_rows)
+                            valid_chem_df = pd.concat([valid_chem_df, rec_df], ignore_index=True)
+                            invalid_chem_df = invalid_chem_df.loc[still_invalid_indices].reset_index(drop=True)
+                            msg = f"Auto-loaded and recovered {len(recovered_rows)} chemist records with verified GPS coordinates from '{geocoded_file}'."
+                            warnings_list.append(msg)
+                            logger.info(msg)
+        except Exception as e:
+            logger.warning(f"Could not auto-integrate geocoded file '{geocoded_file}': {e}")
+    
+    # 5c. Optional pincode geocoding recovery (disabled by default to maintain strict GPS precision)
     if args.use_pincode_centroids:
         pincode_lookup = load_pincode_lookup()
         
@@ -200,46 +256,73 @@ def main():
     else:
         logger.info("Strict GPS mode enabled: records without verified GPS coordinates are excluded from matching.")
     
-    # 5c. Optional city / pincode prefix filtering
+    # 5c. Optional city filtering by city name
     if args.city:
         city_filters = [c.strip() for c in str(args.city).split(",") if c.strip()]
-        logger.info(f"Applying city/pincode prefix filter: {city_filters}")
+        logger.info(f"Applying city filter: {city_filters}")
         
         doc_mask = pd.Series(False, index=valid_doc_df.index)
         chem_mask = pd.Series(False, index=valid_chem_df.index)
         
         for filt in city_filters:
-            if filt.isdigit():
-                # Match pincode starting with digits (e.g. '400')
-                doc_mask |= valid_doc_df["doctor_pincode"].astype(str).str.startswith(filt)
-                chem_mask |= valid_chem_df["chemist_pincode"].astype(str).str.startswith(filt)
-            else:
-                # Textual city name matching fallback
-                filt_clean = "".join(c for c in filt.lower() if c.isalnum())
+            filt_clean = "".join(c for c in filt.lower() if c.isalnum())
+            if not filt_clean:
+                continue
+                
+            filt_doc_mask = pd.Series(False, index=valid_doc_df.index)
+            filt_chem_mask = pd.Series(False, index=valid_chem_df.index)
+            
+            # Match doctor city columns
+            for col in valid_doc_df.columns:
+                if "city" in col.lower():
+                    filt_doc_mask |= valid_doc_df[col].astype(str).apply(
+                        lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
+                    )
+            # Address fallback if no match in city column
+            if not filt_doc_mask.any():
                 for col in valid_doc_df.columns:
-                    if "city" in col.lower():
-                        doc_mask |= valid_doc_df[col].astype(str).apply(
+                    if any(k in col.lower() for k in ["addr", "location"]):
+                        filt_doc_mask |= valid_doc_df[col].astype(str).apply(
                             lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
                         )
+                        
+            # Match chemist city columns
+            for col in valid_chem_df.columns:
+                if "city" in col.lower():
+                    filt_chem_mask |= valid_chem_df[col].astype(str).apply(
+                        lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
+                    )
+            # Address fallback if no match in city column
+            if not filt_chem_mask.any():
                 for col in valid_chem_df.columns:
-                    if "city" in col.lower():
-                        chem_mask |= valid_chem_df[col].astype(str).apply(
+                    if any(k in col.lower() for k in ["addr", "location"]):
+                        filt_chem_mask |= valid_chem_df[col].astype(str).apply(
                             lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
                         )
+                        
+            # Numeric pincode prefix fallback if digits are provided
+            if filt.isdigit():
+                if "doctor_pincode" in valid_doc_df.columns:
+                    filt_doc_mask |= valid_doc_df["doctor_pincode"].astype(str).str.startswith(filt)
+                if "chemist_pincode" in valid_chem_df.columns:
+                    filt_chem_mask |= valid_chem_df["chemist_pincode"].astype(str).str.startswith(filt)
+                    
+            doc_mask |= filt_doc_mask
+            chem_mask |= filt_chem_mask
                         
         valid_doc_df = valid_doc_df[doc_mask].reset_index(drop=True)
         valid_chem_df = valid_chem_df[chem_mask].reset_index(drop=True)
         
         logger.info(
-            f"Filtered records for city/pincode filter '{args.city}': "
+            f"Filtered records for city filter '{args.city}': "
             f"{len(valid_doc_df)} doctors and {len(valid_chem_df)} chemists retained."
         )
         
         if len(valid_doc_df) == 0:
-            logger.error(f"No doctor records matched city/pincode filter '{args.city}'. Matching pipeline terminated.")
+            logger.error(f"No doctor records matched city filter '{args.city}'. Matching pipeline terminated.")
             sys.exit(1)
         if len(valid_chem_df) == 0:
-            logger.error(f"No chemist records matched city/pincode filter '{args.city}'. Matching pipeline terminated.")
+            logger.error(f"No chemist records matched city filter '{args.city}'. Matching pipeline terminated.")
             sys.exit(1)
 
     doc_valid_count = len(valid_doc_df)
