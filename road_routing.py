@@ -126,6 +126,12 @@ def main():
         default=1000,
         help="Number of routing queries between checkpoint updates (default: 1000)"
     )
+    parser.add_argument(
+        "--city",
+        type=str,
+        default=None,
+        help="Filter candidate pairs by first 3 digits of pincode or city prefix (e.g. '--city 400')."
+    )
     
     args = parser.parse_args()
     
@@ -156,10 +162,38 @@ def main():
         logger.exception(f"Error loading inputs: {str(e)}")
         sys.exit(1)
         
+    # Optional city / pincode prefix filtering
+    if args.city:
+        city_filters = [c.strip() for c in str(args.city).split(",") if c.strip()]
+        logger.info(f"Applying city/pincode prefix filter: {city_filters}")
+        mask = pd.Series(False, index=df.index)
+        for filt in city_filters:
+            if filt.isdigit():
+                mask |= df["doctor_pincode"].astype(str).str.startswith(filt)
+            else:
+                filt_clean = "".join(c for c in filt.lower() if c.isalnum())
+                for col in ["Doctor City", "doctor_city", "chemist_chem_city", "chemist_city"]:
+                    if col in df.columns:
+                        mask |= df[col].astype(str).apply(
+                            lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
+                        )
+        df = df[mask].reset_index(drop=True)
+        logger.info(f"Retained {len(df)} candidate pairs matching city/pincode filter '{args.city}'.")
+        if len(df) == 0:
+            logger.error(f"No candidate pairs matched city/pincode filter '{args.city}'.")
+            sys.exit(1)
+
     # Enforce city compatibility filter to eliminate coordinate anomalies
     logger.info("Enforcing city consistency filter between doctor and chemist locations...")
     
     def check_city_match(row):
+        # 1. Check if first 3 digits of doctor and chemist pincode match
+        doc_pin = str(row.get("doctor_pincode", "")).strip()[:3]
+        chem_pin = str(row.get("chemist_pincode", row.get("chemist_chem_pincode", ""))).strip()[:3]
+        if doc_pin and chem_pin and len(doc_pin) == 3 and len(chem_pin) == 3 and doc_pin == chem_pin:
+            return "pincode_prefix"
+        
+        # 2. Textual city matching fallback
         doc_city = normalize_city(row.get("Doctor City", row.get("doctor_city", "")))
         chem_city = normalize_city(row.get("chemist_chem_city", row.get("chemist_city", "")))
         if doc_city == chem_city:
@@ -171,10 +205,13 @@ def main():
     df["city_match_type"] = df.apply(check_city_match, axis=1)
     
     initial_count = len(df)
+    pin_count = int((df["city_match_type"] == "pincode_prefix").sum())
     fuzzy_count = int((df["city_match_type"] == "fuzzy").sum())
     df = df[df["city_match_type"] != "mismatch"].reset_index(drop=True)
     filtered_count = initial_count - len(df)
     
+    if pin_count > 0:
+        logger.info(f"Validated {pin_count} candidate pairs via matching 3-digit pincode prefixes.")
     if fuzzy_count > 0:
         logger.info(
             f"Retained {fuzzy_count} candidate pairs via fuzzy city-name matching "
@@ -184,7 +221,7 @@ def main():
     if filtered_count > 0:
         logger.warning(
             f"Filtered out {filtered_count} candidate pairs due to city coordinate mismatches "
-            f"(e.g., doctor and chemist coordinates are close but they are in different textual cities)."
+            f"(e.g., doctor and chemist coordinates are close but they are in different textual cities/pincodes)."
         )
         
     total_pairs = len(df)

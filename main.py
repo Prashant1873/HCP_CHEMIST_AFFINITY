@@ -62,6 +62,12 @@ def main():
         help="Whether to flag and filter out coordinates outside the approximate India bounding box (default: True)."
     )
     parser.add_argument(
+        "--city", 
+        type=str, 
+        default=None, 
+        help="Filter dataset by first 3 digits of pincode or city prefix (e.g., '--city 400' for Mumbai pincodes starting with 400)."
+    )
+    parser.add_argument(
         "--pincode_fallback", 
         action="store_true", 
         help="Optional fallback logic to filter candidates that match same pincode (not active by default)."
@@ -185,28 +191,52 @@ def main():
             warnings_list.append(msg)
             logger.info(msg)
     
+    # 5c. Optional city / pincode prefix filtering
+    if args.city:
+        city_filters = [c.strip() for c in str(args.city).split(",") if c.strip()]
+        logger.info(f"Applying city/pincode prefix filter: {city_filters}")
+        
+        doc_mask = pd.Series(False, index=valid_doc_df.index)
+        chem_mask = pd.Series(False, index=valid_chem_df.index)
+        
+        for filt in city_filters:
+            if filt.isdigit():
+                # Match pincode starting with digits (e.g. '400')
+                doc_mask |= valid_doc_df["doctor_pincode"].astype(str).str.startswith(filt)
+                chem_mask |= valid_chem_df["chemist_pincode"].astype(str).str.startswith(filt)
+            else:
+                # Textual city name matching fallback
+                filt_clean = "".join(c for c in filt.lower() if c.isalnum())
+                for col in valid_doc_df.columns:
+                    if "city" in col.lower():
+                        doc_mask |= valid_doc_df[col].astype(str).apply(
+                            lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
+                        )
+                for col in valid_chem_df.columns:
+                    if "city" in col.lower():
+                        chem_mask |= valid_chem_df[col].astype(str).apply(
+                            lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
+                        )
+                        
+        valid_doc_df = valid_doc_df[doc_mask].reset_index(drop=True)
+        valid_chem_df = valid_chem_df[chem_mask].reset_index(drop=True)
+        
+        logger.info(
+            f"Filtered records for city/pincode filter '{args.city}': "
+            f"{len(valid_doc_df)} doctors and {len(valid_chem_df)} chemists retained."
+        )
+        
+        if len(valid_doc_df) == 0:
+            logger.error(f"No doctor records matched city/pincode filter '{args.city}'. Matching pipeline terminated.")
+            sys.exit(1)
+        if len(valid_chem_df) == 0:
+            logger.error(f"No chemist records matched city/pincode filter '{args.city}'. Matching pipeline terminated.")
+            sys.exit(1)
+
     doc_valid_count = len(valid_doc_df)
     doc_invalid_count = len(invalid_doc_df)
     chem_valid_count = len(valid_chem_df)
     chem_invalid_count = len(invalid_chem_df)
-    
-    if doc_invalid_count > 0:
-        msg = f"Flagged {doc_invalid_count} invalid doctor records (written to invalid_doctor_records.csv)"
-        warnings_list.append(msg)
-        logger.warning(msg)
-        
-    if chem_invalid_count > 0:
-        msg = f"Flagged {chem_invalid_count} invalid chemist records (written to invalid_chemist_records.csv)"
-        warnings_list.append(msg)
-        logger.warning(msg)
-        
-    # Check if there are valid records to proceed
-    if doc_valid_count == 0:
-        logger.error("No valid doctor records found. Matching pipeline terminated.")
-        sys.exit(1)
-    if chem_valid_count == 0:
-        logger.error("No valid chemist records found. Matching pipeline terminated.")
-        sys.exit(1)
         
     # 6. Build Spatial Index & Query Nearest Neighbors
     try:
@@ -244,6 +274,7 @@ def main():
     summary_data = {
         "timestamp": run_timestamp,
         "runtime_sec": runtime_sec,
+        "city_filter": args.city,
         "doctor_file": doctor_path,
         "chemist_file": chemist_path,
         "doctor_lat_col": doc_lat_col,

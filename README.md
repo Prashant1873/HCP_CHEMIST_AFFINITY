@@ -74,17 +74,22 @@ C:\Users\u1204874\AppData\Local\Python\pythoncore-3.14-64\python.exe main.py
 ```
 
 ### Command-Line Customization
-You can override file paths, candidate size $K$, final selection $N$, and output folders:
+You can override file paths, candidate size $K$, final selection $N$, city/pincode filters, and output folders:
 
 ```bash
-C:\Users\u1204874\AppData\Local\Python\pythoncore-3.14-64\python.exe main.py \
+python main.py \
   --doctor_file "Doctor_test_HCM.xlsx" \
   --chemist_file "Chemist_test_HCM.xlsx" \
   --candidate_k 50 \
   --final_n 5 \
+  --city 400 \
   --output_dir "outputs"
 ```
 
+* **City / Pincode Prefix Filter (`--city`)**:
+  * Filter by first 3 digits of pincode (e.g. `--city 400` for Mumbai, `--city 560` for Bangalore, `--city 110` for Delhi). This avoids city name spelling mismatches.
+  * Supports multiple prefixes separated by commas (e.g. `--city 400,401`).
+  * Also supports textual city names (e.g. `--city "mumbai"`).
 * To change candidate size $K$ to other limits, use `--candidate_k 10`, `--candidate_k 20`, `--candidate_k 30`, or `--candidate_k 100`.
 
 ---
@@ -113,6 +118,7 @@ C:\Users\u1204874\AppData\Local\Python\bin\python3.exe road_routing.py --routing
 
 ### CLI Customizations
 * `--input_file`: Path to the air-distance candidates file (default: `outputs/doctor_chemist_candidates_air_distance.csv`).
+* `--city`: Filter candidate pairs by first 3 digits of pincode or city prefix (e.g. `--city 400`).
 * `--routing_engine`: Routing engine to use: `GraphHopper` or `OSRM` (default: `GraphHopper`).
 * `--osrm_endpoint`: HTTP endpoint of the local instance. Defaults to `http://localhost:8989` for GraphHopper, `http://localhost:5000` for OSRM.
 * `--final_n`: Target number of nearest chemists to select per doctor (default: `5`).
