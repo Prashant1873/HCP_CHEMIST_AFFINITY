@@ -1,0 +1,18 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Temporary and office lock files
+~$*
+.DS_Store
+Thumbs.db
+
+# Large binaries & routing cache
+jdk17/
+graph-cache/
+*.jar
+*.pbf
+
+# Checkpoint files
+outputs/*checkpoint*.csv

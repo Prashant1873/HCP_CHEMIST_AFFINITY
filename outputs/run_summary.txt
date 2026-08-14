@@ -1,0 +1,38 @@
+==================================================
+DOCTOR-CHEMIST SPATIAL MATCHING RUN SUMMARY
+==================================================
+Run Timestamp:              2026-08-14T10:42:30.179256
+Approximate Runtime:        19.090 seconds
+
+INPUT FILES:
+- Doctor Input File:        .\Doctor_test_HCM.xlsx
+- Chemist Input File:       .\Chemist_test_HCM.xlsx
+
+COLUMNS DETECTED:
+- Doctor Coords (Lat/Lon):  Lat / Long
+- Chemist Coords (Lat/Lon): chem_lat / chem_long
+- Doctor ID / Name Col:     Doc ID / DOCTOR NAME
+- Chemist ID / Name Col:    IQVIA ID / chem_name
+
+RECORD COUNTS:
+- Doctors Loaded:           299
+- Chemists Loaded:          145557
+- Valid Doctors:            299
+- Valid Chemists:           137349
+- Invalid Doctors:          0
+- Invalid Chemists:         8208
+
+SPATIAL MATCHING SETTINGS:
+- Candidate K Shortlisted:  50
+- Final N Chemists:         5
+- Earth Radius (KM):        6371.0088
+- India Bounding Box Filter:True
+
+OUTPUT STATS:
+- Total Candidate Pairs:    14950
+
+WARNINGS/REMARKS:
+Auto-corrected 1 chemist records with inverted lat/lon coordinates (swapped and retained).
+Recovered 9962 chemist records via pincode geocoding.
+Flagged 8208 invalid chemist records (written to invalid_chemist_records.csv)
+==================================================

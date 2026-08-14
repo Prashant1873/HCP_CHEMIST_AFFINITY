@@ -1,0 +1,15 @@
+{
+  "doctor_file": ".\\Doctor_test_HCM.xlsx",
+  "chemist_file": ".\\Chemist_test_HCM.xlsx",
+  "doctor_lat_col": "Lat",
+  "doctor_lon_col": "Long",
+  "chemist_lat_col": "chem_lat",
+  "chemist_lon_col": "chem_long",
+  "doctor_id_col": "Doc ID",
+  "chemist_id_col": "IQVIA ID",
+  "candidate_k": 50,
+  "final_n": 5,
+  "earth_radius_km": 6371.0088,
+  "india_bbox_filter": true,
+  "road_distance_calculated": false
+}

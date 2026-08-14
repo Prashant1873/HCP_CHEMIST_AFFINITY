@@ -1,0 +1,13 @@
+# Production requirements for spatial nearest-neighbor search
+pandas
+numpy
+scikit-learn
+openpyxl
+xlrd
+tqdm
+
+# Future routing and geospatial integration packages (uncomment when routing is active)
+# requests # For HTTP API requests to OSRM / GraphHopper
+# geopandas # For handling shapefiles and geographic overlays
+# shapely # For computational geometry operations
+# h3 # For hexagonal spatial indexing
