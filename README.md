@@ -170,7 +170,32 @@ The two-phase pipeline writes all deliverables into the `outputs/` folder:
 
 ---
 
-## 9. Known Limitations
+## 9. Batch Address Geocoding Tool
+
+To recover GPS coordinates for chemist records with missing coordinates or to resolve written text addresses from `outputs/invalid_chemist_records.csv`:
+
+```bash
+# 1. Using Free OpenStreetMap Nominatim (Rate limited to 1 req/sec)
+python geocode_addresses.py --city 400
+
+# 2. Using Google Maps Geocoding API (Fastest & most accurate for Indian addresses)
+python geocode_addresses.py --provider google --api_key "YOUR_API_KEY"
+
+# 3. Using LocationIQ API
+python geocode_addresses.py --provider locationiq --api_key "YOUR_API_KEY"
+```
+
+### CLI Options:
+* `--input_file`: Path to the file containing records to geocode (default: `outputs/invalid_chemist_records.csv`).
+* `--provider`: `nominatim` (default, free), `google`, or `locationiq`.
+* `--api_key`: API key for Google Maps or LocationIQ (can also use env vars `GOOGLE_MAPS_API_KEY` / `LOCATIONIQ_API_KEY`).
+* `--city`: Filter records to geocode by 3-digit pincode prefix or city name (e.g. `--city 400`).
+* `--limit`: Limit number of records to process in the run (useful for testing, e.g. `--limit 50`).
+* `--output_file`: Destination path for geocoded records (default: `outputs/geocoded_chemist_records.csv`).
+
+---
+
+## 10. Known Limitations
 
 * **Spherical Approximation**: Great-circle calculations assume a perfectly spherical Earth ($R = 6371.0088\text{ km}$), introducing minor errors (less than 0.5%) which are negligible for localized shortlisting.
 * **Routing Server Required for Road Distances**: The script requires a routing engine (OSRM or GraphHopper) to perform path-finding algorithms against the OpenStreetMap data.
