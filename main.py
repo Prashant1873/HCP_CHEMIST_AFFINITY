@@ -72,6 +72,12 @@ def main():
         action="store_true", 
         help="Optional fallback logic to filter candidates that match same pincode (not active by default)."
     )
+    parser.add_argument(
+        "--use_pincode_centroids", 
+        action="store_true", 
+        default=False, 
+        help="Optional fallback: approximate missing coordinates using pincode centroids (default: False, strict GPS only)."
+    )
     
     args = parser.parse_args()
     
@@ -172,24 +178,27 @@ def main():
         warnings_list.append(msg)
         logger.info(msg)
     
-    # 5b. Pincode geocoding recovery: attempt to recover records with missing coords but valid pincodes
-    pincode_lookup = load_pincode_lookup()
-    
-    if pincode_lookup:
-        recovered_doc, invalid_doc_df = recover_missing_coordinates(invalid_doc_df, "doctor", pincode_lookup)
-        recovered_chem, invalid_chem_df = recover_missing_coordinates(invalid_chem_df, "chemist", pincode_lookup)
+    # 5b. Optional pincode geocoding recovery (disabled by default to maintain strict GPS precision)
+    if args.use_pincode_centroids:
+        pincode_lookup = load_pincode_lookup()
         
-        if len(recovered_doc) > 0:
-            valid_doc_df = pd.concat([valid_doc_df, recovered_doc], ignore_index=True)
-            msg = f"Recovered {len(recovered_doc)} doctor records via pincode geocoding."
-            warnings_list.append(msg)
-            logger.info(msg)
+        if pincode_lookup:
+            recovered_doc, invalid_doc_df = recover_missing_coordinates(invalid_doc_df, "doctor", pincode_lookup)
+            recovered_chem, invalid_chem_df = recover_missing_coordinates(invalid_chem_df, "chemist", pincode_lookup)
             
-        if len(recovered_chem) > 0:
-            valid_chem_df = pd.concat([valid_chem_df, recovered_chem], ignore_index=True)
-            msg = f"Recovered {len(recovered_chem)} chemist records via pincode geocoding."
-            warnings_list.append(msg)
-            logger.info(msg)
+            if len(recovered_doc) > 0:
+                valid_doc_df = pd.concat([valid_doc_df, recovered_doc], ignore_index=True)
+                msg = f"Recovered {len(recovered_doc)} doctor records via pincode centroid approximation."
+                warnings_list.append(msg)
+                logger.info(msg)
+                
+            if len(recovered_chem) > 0:
+                valid_chem_df = pd.concat([valid_chem_df, recovered_chem], ignore_index=True)
+                msg = f"Recovered {len(recovered_chem)} chemist records via pincode centroid approximation."
+                warnings_list.append(msg)
+                logger.info(msg)
+    else:
+        logger.info("Strict GPS mode enabled: records without verified GPS coordinates are excluded from matching.")
     
     # 5c. Optional city / pincode prefix filtering
     if args.city:
@@ -237,6 +246,16 @@ def main():
     doc_invalid_count = len(invalid_doc_df)
     chem_valid_count = len(valid_chem_df)
     chem_invalid_count = len(invalid_chem_df)
+    
+    if doc_invalid_count > 0:
+        msg = f"Flagged {doc_invalid_count} invalid doctor records (written to invalid_doctor_records.csv)"
+        warnings_list.append(msg)
+        logger.warning(msg)
+        
+    if chem_invalid_count > 0:
+        msg = f"Excluded {chem_invalid_count} chemist records without verified GPS coordinates (written to invalid_chemist_records.csv)"
+        warnings_list.append(msg)
+        logger.info(msg)
         
     # 6. Build Spatial Index & Query Nearest Neighbors
     try:
