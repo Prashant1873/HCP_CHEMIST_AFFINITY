@@ -444,6 +444,14 @@ VALIDATION SUMMARY OUTPUTS:
         f.write(summary_txt)
         
     logger.info(f"Saved run summary to {summary_path_txt}")
+    
+    # 9. Move key deliverables to results folder
+    try:
+        from src.output_writer import publish_to_results
+        publish_to_results(source_dir=output_dir, results_dir="results")
+    except Exception as e:
+        logger.warning(f"Could not publish outputs to results folder: {e}")
+        
     logger.info("Phase 2 pipeline execution completed successfully.")
 
 if __name__ == "__main__":

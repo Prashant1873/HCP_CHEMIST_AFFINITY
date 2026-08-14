@@ -16,7 +16,7 @@ from src.data_loader import auto_detect_inputs, load_data_file
 from src.column_detection import detect_coordinates, detect_identifiers
 from src.data_cleaning import clean_and_validate_dataset
 from src.spatial_index import build_ball_tree, find_nearest_chemists
-from src.output_writer import write_results
+from src.output_writer import write_results, publish_to_results
 from src.pincode_geocoder import load_pincode_lookup, recover_missing_coordinates
 
 logger = setup_logger("main")
@@ -430,6 +430,12 @@ def main():
     except Exception as e:
         logger.exception(f"Error saving outputs: {str(e)}")
         sys.exit(1)
+        
+    # 11. Move key deliverables to results folder
+    try:
+        publish_to_results(source_dir=args.output_dir, results_dir="results")
+    except Exception as e:
+        logger.warning(f"Could not publish outputs to results folder: {e}")
         
     logger.info("Doctor-Chemist Matching Pipeline execution completed successfully.")
 

@@ -17,3 +17,5 @@ graph-cache/
 # Checkpoints & Generated Pipeline Outputs
 outputs/
 logs/
+results/*
+!results/.gitkeep

@@ -93,3 +93,54 @@ WARNINGS/REMARKS:
         f.write(summary_txt)
         
     logger.info("Output writer completed operations successfully.")
+
+
+def publish_to_results(
+    source_dir: str = "outputs",
+    results_dir: str = "results",
+    file_list: Any = None
+) -> None:
+    """
+    Cleans the results directory (preserving .gitkeep) and copies the key final
+    output files from source_dir to results_dir.
+    """
+    import shutil
+    
+    os.makedirs(results_dir, exist_ok=True)
+    
+    # 1. Clean existing files in results directory (preserving .gitkeep)
+    for fname in os.listdir(results_dir):
+        if fname == ".gitkeep":
+            continue
+        fpath = os.path.join(results_dir, fname)
+        try:
+            if os.path.isfile(fpath) or os.path.islink(fpath):
+                os.unlink(fpath)
+            elif os.path.isdir(fpath):
+                shutil.rmtree(fpath)
+        except Exception as e:
+            logger.warning(f"Could not clean old results file '{fpath}': {e}")
+            
+    logger.info(f"Cleaned '{results_dir}' folder.")
+    
+    # 2. Determine files to publish
+    if file_list is None:
+        # Auto-detect final deliverables in source_dir, excluding temporary checkpoints
+        exclude_files = {
+            "road_distance_checkpoint.csv",
+            "geocoding_checkpoint.csv"
+        }
+        file_list = [
+            f for f in os.listdir(source_dir)
+            if f not in exclude_files and not f.endswith(".tmp") and os.path.isfile(os.path.join(source_dir, f))
+        ]
+        
+    copied_count = 0
+    for fname in file_list:
+        src_path = os.path.join(source_dir, fname)
+        if os.path.exists(src_path) and os.path.isfile(src_path):
+            dst_path = os.path.join(results_dir, fname)
+            shutil.copy2(src_path, dst_path)
+            copied_count += 1
+            
+    logger.info(f"Published {copied_count} key final output files to '{results_dir}' folder.")
