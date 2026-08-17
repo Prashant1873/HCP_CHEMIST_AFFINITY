@@ -52,9 +52,9 @@ def auto_detect_inputs(search_dir: str = ".") -> Tuple[Optional[str], Optional[s
 
 def load_data_file(filepath: str) -> pd.DataFrame:
     """
-    Loads an Excel (.xlsx, .xls) or CSV file.
+    Loads an Excel (.xlsx, .xls) or CSV file with multi-encoding fallback.
     Handles multiple sheets in Excel files and raises errors for empty files.
-    Preserves original columns.
+    Preserves original columns and data types.
     """
     if not os.path.exists(filepath):
         raise FileNotFoundError(f"File not found: {filepath}")
@@ -62,7 +62,22 @@ def load_data_file(filepath: str) -> pd.DataFrame:
     ext = os.path.splitext(filepath)[1].lower()
     
     if ext == '.csv':
-        df = pd.read_csv(filepath)
+        encodings = ["utf-8", "utf-8-sig", "latin1", "cp1252", "iso-8859-1"]
+        df = None
+        last_err = None
+        for enc in encodings:
+            try:
+                df = pd.read_csv(filepath, encoding=enc, low_memory=False)
+                break
+            except (UnicodeDecodeError, UnicodeError) as e:
+                last_err = e
+                continue
+            except Exception as e:
+                last_err = e
+                break
+                
+        if df is None:
+            raise ValueError(f"Failed to load CSV '{filepath}' with supported encodings: {last_err}")
     elif ext in ['.xlsx', '.xls']:
         excel_file = pd.ExcelFile(filepath)
         sheets = excel_file.sheet_names
@@ -80,3 +95,4 @@ def load_data_file(filepath: str) -> pd.DataFrame:
         
     logger.info(f"Successfully loaded '{filepath}' with shape {df.shape}")
     return df
+

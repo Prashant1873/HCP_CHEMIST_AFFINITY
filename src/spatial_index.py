@@ -74,12 +74,31 @@ def find_nearest_chemists(
     distances_rad, indices = tree.query(doc_coords_rad, k=query_k)
     distances_km = distances_rad * config.EARTH_RADIUS_KM
     
+    # Pre-convert records to dicts for high-speed indexing
+    doc_records = doctor_df.to_dict('records')
+    chemist_records = chemist_df.to_dict('records')
+    
+    # Pre-format chemist dictionary keys
+    formatted_chem_records = []
+    chemist_unique_keys = []
+    for c_row in chemist_records:
+        formatted_c = {}
+        for col, val in c_row.items():
+            key = col if col.startswith("chemist_") else f"chemist_{col}"
+            formatted_c[key] = val
+        formatted_chem_records.append(formatted_c)
+        
+        cid = str(c_row.get("chemist_id", "")).strip()
+        cname = str(c_row.get("chemist_name", "")).strip()
+        clat = round(float(c_row.get("chemist_latitude", 0.0)), 6)
+        clon = round(float(c_row.get("chemist_longitude", 0.0)), 6)
+        chemist_unique_keys.append(cid if cid and cid != "Unknown" else f"{cname}_{clat}_{clon}")
+
     results_rows = []
     doctors_with_matches = 0
     total_matches = 0
     
-    for i, (_, doc_row) in enumerate(doctor_df.iterrows()):
-        doc_dict = doc_row.to_dict()
+    for i, doc_dict in enumerate(doc_records):
         seen_chemist_keys = set()
         rank = 1
         
@@ -89,36 +108,27 @@ def find_nearest_chemists(
                 # Since distances are in ascending order, no subsequent candidate is closer
                 break
                 
-            c_row = chemist_df.iloc[chem_idx]
-            
-            # Safeguard: Unique chemist identification key to prevent ranking same chemist multiple times
-            cid = str(c_row.get("chemist_id", "")).strip()
-            cname = str(c_row.get("chemist_name", "")).strip()
-            clat = round(float(c_row.get("chemist_latitude", 0.0)), 6)
-            clon = round(float(c_row.get("chemist_longitude", 0.0)), 6)
-            unique_key = cid if cid and cid != "Unknown" else f"{cname}_{clat}_{clon}"
-            
+            unique_key = chemist_unique_keys[chem_idx]
             if unique_key in seen_chemist_keys:
                 continue  # Skip duplicate chemist for this doctor
             seen_chemist_keys.add(unique_key)
             
-            # Assemble mapped pair
-            pair = {**doc_dict}
-            for col, val in c_row.items():
-                key = col if col.startswith("chemist_") else f"chemist_{col}"
-                pair[key] = val
-                
-            pair["air_distance_km"] = round(float(d_km), 4)
-            pair["air_distance_rank"] = rank
-            pair["candidate_k_used"] = candidate_k
-            pair["max_distance_km_threshold"] = max_distance_km
+            c_dict = formatted_chem_records[chem_idx]
             
-            # Road distance placeholders
-            pair["road_distance_km"] = np.nan
-            pair["road_distance_rank"] = np.nan
-            pair["road_distance_status"] = "not_calculated"
-            pair["routing_engine"] = np.nan
-            pair["routing_error_message"] = np.nan
+            # Assemble mapped pair
+            pair = {
+                **doc_dict,
+                **c_dict,
+                "air_distance_km": round(float(d_km), 4),
+                "air_distance_rank": rank,
+                "candidate_k_used": candidate_k,
+                "max_distance_km_threshold": max_distance_km,
+                "road_distance_km": np.nan,
+                "road_distance_rank": np.nan,
+                "road_distance_status": "not_calculated",
+                "routing_engine": np.nan,
+                "routing_error_message": np.nan
+            }
             
             results_rows.append(pair)
             rank += 1
@@ -139,4 +149,5 @@ def find_nearest_chemists(
         f"with {total_matches} total unique chemist pairs strictly within {max_distance_km} km."
     )
     return results_df
+
 

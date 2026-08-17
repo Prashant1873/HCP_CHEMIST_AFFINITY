@@ -152,8 +152,7 @@ def publish_to_results(
         "final_doctor_nearest_5_chemists.csv",
         "excluded_chemists.xlsx",
         "excluded_chemists.csv",
-        "run_summary.txt",
-        "real_osrm_road_distance_run_summary.txt"
+        "run_summary.txt"
     ]
     
     copied_count = 0
@@ -161,10 +160,19 @@ def publish_to_results(
         src_path = os.path.join(source_dir, fname)
         if os.path.exists(src_path) and os.path.isfile(src_path):
             dst_path = os.path.join(results_dir, fname)
-            shutil.copy2(src_path, dst_path)
-            logger.info(f"Published to results: {fname}")
-            copied_count += 1
+            try:
+                shutil.copy2(src_path, dst_path)
+                logger.info(f"Published to results: {fname}")
+                copied_count += 1
+            except PermissionError:
+                logger.warning(
+                    f"Notice: '{dst_path}' is currently open in another program (like Excel). "
+                    f"Close the file if you want to overwrite it with latest results."
+                )
+            except Exception as e:
+                logger.warning(f"Could not copy '{fname}' to results: {e}")
             
     logger.info(f"Published {copied_count} deliverable files to '{results_dir}' folder (final candidates, excluded chemists, and run summary).")
+
 
 
