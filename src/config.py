@@ -18,6 +18,8 @@ INVERT_LON_MAX = 38.0
 # Search Defaults
 DEFAULT_CANDIDATE_K = 50
 DEFAULT_FINAL_N = 5
+DEFAULT_MAX_DISTANCE_KM = 1.0  # Hard filter: exclude any chemist farther than 1 km (1000 meters)
+VERIFY_PINCODES_DEFAULT = True  # Run GeoJSON pincode boundary validation by default
 
 # Potential latitude column names
 LATITUDE_COLUMNS = [

@@ -2,7 +2,7 @@
 import numpy as np
 import pandas as pd
 from sklearn.neighbors import BallTree
-from typing import Tuple, Dict, List
+from typing import Tuple, Dict, List, Optional, Any, Set
 from src.utils import setup_logger
 from src import config
 
@@ -33,74 +33,110 @@ def find_nearest_chemists(
     doctor_df: pd.DataFrame,
     chemist_df: pd.DataFrame,
     tree: BallTree,
-    candidate_k: int
+    candidate_k: int = config.DEFAULT_CANDIDATE_K,
+    final_n: int = config.DEFAULT_FINAL_N,
+    max_distance_km: Optional[float] = config.DEFAULT_MAX_DISTANCE_KM
 ) -> pd.DataFrame:
     """
-    For each doctor, queries the BallTree to find the top K nearest chemist candidates.
-    Returns a DataFrame containing doctor-chemist pairs with air distances.
+    For each doctor, queries the BallTree to find the top nearest unique chemist candidates
+    within a maximum distance threshold (default: 1.0 km), ensuring no duplicate chemists per doctor.
+    
+    Args:
+        doctor_df: Validated DataFrame of doctors
+        chemist_df: Validated DataFrame of chemists
+        tree: Fitted BallTree on chemist coordinates
+        candidate_k: Initial query pool size per doctor
+        final_n: Maximum number of closest unique chemists to rank per doctor (default: 5)
+        max_distance_km: Hard maximum distance threshold in km (default: 1.0 km)
+        
+    Returns:
+        DataFrame containing deduplicated doctor-chemist pairs strictly within max_distance_km,
+        ranked 1 to final_n per doctor.
     """
     n_chemists = len(chemist_df)
-    k = min(candidate_k, n_chemists)
-    
-    if k != candidate_k:
-        logger.warning(
-            f"Requested candidate_k ({candidate_k}) is greater than number of valid chemists ({n_chemists}). "
-            f"Adjusting K to {k}."
-        )
+    if n_chemists == 0 or len(doctor_df) == 0:
+        logger.warning("Empty doctor or chemist dataset provided for spatial querying.")
+        return pd.DataFrame()
         
+    # Query pool size should be large enough to allow deduplication and distance filtering
+    query_k = min(n_chemists, max(candidate_k, final_n * 5, 20))
+    
     doc_lats = doctor_df["doctor_latitude"].values
     doc_lons = doctor_df["doctor_longitude"].values
     doc_coords_rad = np.deg2rad(np.vstack((doc_lats, doc_lons)).T)
     
-    logger.info(f"Querying BallTree for top {k} nearest chemists for {len(doctor_df)} doctors...")
+    logger.info(
+        f"Querying BallTree for up to {final_n} unique chemists within {max_distance_km} km "
+        f"for {len(doctor_df)} doctors (query pool k={query_k})..."
+    )
     
-    # Query tree: returns shape (n_doctors, k)
-    distances_rad, indices = tree.query(doc_coords_rad, k=k)
-    
-    logger.info("Query complete. Vectorizing results...")
-    
-    # Calculate distances in kilometers
+    # Query tree: returns shape (n_doctors, query_k) sorted by distance ascending
+    distances_rad, indices = tree.query(doc_coords_rad, k=query_k)
     distances_km = distances_rad * config.EARTH_RADIUS_KM
     
-    # Vectorized generation of pairs
-    n_docs = len(doctor_df)
+    results_rows = []
+    doctors_with_matches = 0
+    total_matches = 0
     
-    # Replicate doctor row indices k times
-    doc_indices_rep = np.repeat(np.arange(n_docs), k)
-    # Flatten queried chemist indices
-    chem_indices_flat = indices.flatten()
-    # Flatten distances
-    distances_km_flat = distances_km.flatten()
-    # Rank is [1, 2, ..., k] repeated for each doctor
-    ranks_flat = np.tile(np.arange(1, k + 1), n_docs)
+    for i, (_, doc_row) in enumerate(doctor_df.iterrows()):
+        doc_dict = doc_row.to_dict()
+        seen_chemist_keys = set()
+        rank = 1
+        
+        for chem_idx, d_km in zip(indices[i], distances_km[i]):
+            # Hard filter: exclude if greater than max_distance_km
+            if max_distance_km is not None and d_km > max_distance_km:
+                # Since distances are in ascending order, no subsequent candidate is closer
+                break
+                
+            c_row = chemist_df.iloc[chem_idx]
+            
+            # Safeguard: Unique chemist identification key to prevent ranking same chemist multiple times
+            cid = str(c_row.get("chemist_id", "")).strip()
+            cname = str(c_row.get("chemist_name", "")).strip()
+            clat = round(float(c_row.get("chemist_latitude", 0.0)), 6)
+            clon = round(float(c_row.get("chemist_longitude", 0.0)), 6)
+            unique_key = cid if cid and cid != "Unknown" else f"{cname}_{clat}_{clon}"
+            
+            if unique_key in seen_chemist_keys:
+                continue  # Skip duplicate chemist for this doctor
+            seen_chemist_keys.add(unique_key)
+            
+            # Assemble mapped pair
+            pair = {**doc_dict}
+            for col, val in c_row.items():
+                key = col if col.startswith("chemist_") else f"chemist_{col}"
+                pair[key] = val
+                
+            pair["air_distance_km"] = round(float(d_km), 4)
+            pair["air_distance_rank"] = rank
+            pair["candidate_k_used"] = candidate_k
+            pair["max_distance_km_threshold"] = max_distance_km
+            
+            # Road distance placeholders
+            pair["road_distance_km"] = np.nan
+            pair["road_distance_rank"] = np.nan
+            pair["road_distance_status"] = "not_calculated"
+            pair["routing_engine"] = np.nan
+            pair["routing_error_message"] = np.nan
+            
+            results_rows.append(pair)
+            rank += 1
+            if rank > final_n:
+                break
+                
+        if rank > 1:
+            doctors_with_matches += 1
+            total_matches += (rank - 1)
+            
+    results_df = pd.DataFrame(results_rows)
     
-    # Extract the target subsets
-    doc_sub = doctor_df.iloc[doc_indices_rep].reset_index(drop=True)
-    chem_sub = chemist_df.iloc[chem_indices_flat].reset_index(drop=True)
-    
-    # Merge doctor and chemist records side-by-side
-    # Combine original columns
-    # We prefix chemist columns to avoid collisions
-    chem_sub_cols = {col: f"chemist_{col}" if not col.startswith("chemist_") else col for col in chem_sub.columns}
-    chem_sub = chem_sub.rename(columns=chem_sub_cols)
-    
-    # Assemble final output
-    results_df = pd.concat([doc_sub, chem_sub], axis=1)
-    
-    # Add distance fields
-    results_df["air_distance_rank"] = ranks_flat
-    results_df["air_distance_km"] = distances_km_flat
-    results_df["candidate_k_used"] = candidate_k
-    
-    # Add road distance placeholder fields
-    results_df["road_distance_km"] = np.nan
-    results_df["road_distance_rank"] = np.nan
-    results_df["road_distance_status"] = "not_calculated"
-    results_df["routing_engine"] = np.nan
-    results_df["routing_error_message"] = np.nan
-    
-    # Sort output to make sure it's strictly ordered by doctor and distance rank
-    results_df = results_df.sort_values(by=[f"doctor_id", "air_distance_rank"]).reset_index(drop=True)
-    
-    logger.info(f"Generated {len(results_df)} doctor-chemist candidate pairs.")
+    if not results_df.empty:
+        results_df = results_df.sort_values(by=["doctor_id", "air_distance_rank"]).reset_index(drop=True)
+        
+    logger.info(
+        f"Spatial mapping complete: matched {doctors_with_matches}/{len(doctor_df)} doctors "
+        f"with {total_matches} total unique chemist pairs strictly within {max_distance_km} km."
+    )
     return results_df
+

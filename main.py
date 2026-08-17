@@ -89,8 +89,14 @@ def main():
     parser.add_argument(
         "--verify_pincodes",
         action="store_true",
-        default=False,
-        help="Verify doctor and chemist coordinates against GeoJSON pincode boundaries and filter out mismatches."
+        default=config.VERIFY_PINCODES_DEFAULT,
+        help="Verify doctor and chemist coordinates against GeoJSON pincode boundaries and filter out mismatches (default: True)."
+    )
+    parser.add_argument(
+        "--no_pincode_verification",
+        dest="verify_pincodes",
+        action="store_false",
+        help="Disable GeoJSON pincode boundary verification."
     )
     parser.add_argument(
         "--pincode_tolerance_km",
@@ -115,6 +121,12 @@ def main():
         dest="exclude_generic_names",
         action="store_false",
         help="Disable filtering of generic chemist store names."
+    )
+    parser.add_argument(
+        "--max_distance_km",
+        type=float,
+        default=config.DEFAULT_MAX_DISTANCE_KM,
+        help=f"Hard distance filter: exclude any chemist candidate farther than this distance (default: {config.DEFAULT_MAX_DISTANCE_KM} km)."
     )
     
     args = parser.parse_args()
@@ -414,10 +426,36 @@ def main():
                 index=False
             )
 
+    # Consolidate ALL excluded chemists across all exclusion stages
+    excluded_chemists_list = []
+    
+    if len(invalid_chem_df) > 0:
+        df_inv = invalid_chem_df.copy()
+        df_inv["exclusion_stage"] = "GPS_COORDINATE_ERROR"
+        df_inv["exclusion_reason"] = df_inv["rejection_reason"] if "rejection_reason" in df_inv.columns else "Invalid or missing GPS coordinates"
+        excluded_chemists_list.append(df_inv)
+        
+    if len(pincode_mismatched_chems) > 0:
+        df_pin = pincode_mismatched_chems.copy()
+        df_pin["exclusion_stage"] = "PINCODE_BOUNDARY_MISMATCH"
+        df_pin["exclusion_reason"] = df_pin["pincode_rejection_reason"] if "pincode_rejection_reason" in df_pin.columns else "Coordinates outside stated pincode boundary"
+        excluded_chemists_list.append(df_pin)
+        
+    if len(excluded_generic_chems) > 0:
+        df_gen = excluded_generic_chems.copy()
+        df_gen["exclusion_stage"] = "GENERIC_NAME_EXCLUSION"
+        df_gen["exclusion_reason"] = df_gen["generic_exclusion_reason"] if "generic_exclusion_reason" in df_gen.columns else "Generic placeholder store name"
+        excluded_chemists_list.append(df_gen)
+        
+    if excluded_chemists_list:
+        excluded_chemists_master = pd.concat(excluded_chemists_list, ignore_index=True)
+    else:
+        excluded_chemists_master = pd.DataFrame()
+
     doc_valid_count = len(valid_doc_df)
     doc_invalid_count = len(invalid_doc_df) + len(pincode_mismatched_docs)
     chem_valid_count = len(valid_chem_df)
-    chem_invalid_count = len(invalid_chem_df) + len(pincode_mismatched_chems) + len(excluded_generic_chems)
+    chem_invalid_count = len(excluded_chemists_master)
     
     if doc_invalid_count > 0:
         msg = f"Flagged {doc_invalid_count} invalid doctor records (written to invalid_doctor_records.csv)"
@@ -425,40 +463,44 @@ def main():
         logger.warning(msg)
         
     if chem_invalid_count > 0:
-        msg = f"Excluded {chem_invalid_count} chemist records without verified GPS coordinates (written to invalid_chemist_records.csv)"
+        msg = f"Excluded {chem_invalid_count} chemist records across GPS, Pincode, and Generic Name tests (written to excluded_chemists.csv)"
         warnings_list.append(msg)
         logger.info(msg)
+
+    # 5f. Deduplication safeguard on chemist dataset before building spatial index
+    initial_chem_pool = len(valid_chem_df)
+    if "chemist_id" in valid_chem_df.columns and valid_chem_df["chemist_id"].notna().any():
+        valid_chem_df = valid_chem_df.drop_duplicates(subset=["chemist_id"]).reset_index(drop=True)
+    else:
+        valid_chem_df = valid_chem_df.drop_duplicates(subset=["chemist_name", "chemist_latitude", "chemist_longitude"]).reset_index(drop=True)
         
-    # 6. Build Spatial Index & Query Nearest Neighbors
+    dedup_removed = initial_chem_pool - len(valid_chem_df)
+    if dedup_removed > 0:
+        logger.info(f"Deduplication safeguard: removed {dedup_removed} duplicate chemist records before spatial indexing.")
+        
+    # 6. Build Spatial Index & Query Nearest Neighbors (Hard filtered to <= 1.0 km)
     try:
         tree, _ = build_ball_tree(valid_chem_df)
         candidates_df = find_nearest_chemists(
             doctor_df=valid_doc_df,
             chemist_df=valid_chem_df,
             tree=tree,
-            candidate_k=args.candidate_k
+            candidate_k=args.candidate_k,
+            final_n=args.final_n,
+            max_distance_km=args.max_distance_km
         )
     except Exception as e:
         logger.exception(f"Error during spatial querying: {str(e)}")
         sys.exit(1)
         
     # 7. Optional pincode filtering (for demonstration / fallback logic)
-    if args.pincode_fallback:
+    if args.pincode_fallback and not candidates_df.empty:
         logger.info("Applying optional pincode match ranking fallback...")
-        # Add a column indicating if pincode matches
         candidates_df["pincode_match"] = (
             candidates_df["doctor_pincode"] == candidates_df["chemist_chemist_pincode"]
         )
-        # Note: In real life, we can filter or re-rank. But here we just flag.
         
-    # 8. Verification checks
-    expected_rows = doc_valid_count * min(args.candidate_k, chem_valid_count)
-    if len(candidates_df) != expected_rows:
-        msg = f"Output row count mismatch. Expected: {expected_rows}, Generated: {len(candidates_df)}"
-        warnings_list.append(msg)
-        logger.warning(msg)
-        
-    # 9. Format output summaries and configs
+    # 8. Format output summaries and configs
     runtime_sec = time.time() - start_time
     logger.info(f"Pipeline executed in {runtime_sec:.3f} seconds.")
     
@@ -482,8 +524,12 @@ def main():
         "chemist_valid_count": chem_valid_count,
         "doctor_invalid_count": doc_invalid_count,
         "chemist_invalid_count": chem_invalid_count,
+        "chemist_gps_invalid_count": len(invalid_chem_df),
+        "chemist_pincode_mismatched_count": len(pincode_mismatched_chems),
+        "chemist_generic_excluded_count": len(excluded_generic_chems),
         "candidate_k": args.candidate_k,
         "final_n": args.final_n,
+        "max_distance_km": args.max_distance_km,
         "earth_radius_km": config.EARTH_RADIUS_KM,
         "india_bbox_filter": args.india_bbox_filter,
         "total_pairs_generated": len(candidates_df),
@@ -501,18 +547,19 @@ def main():
         "chemist_id_col": chem_id_col,
         "candidate_k": args.candidate_k,
         "final_n": args.final_n,
+        "max_distance_km": args.max_distance_km,
         "earth_radius_km": config.EARTH_RADIUS_KM,
         "india_bbox_filter": args.india_bbox_filter,
         "road_distance_calculated": False
     }
     
-    # 10. Write outputs
+    # 9. Write outputs
     try:
         write_results(
             output_dir=args.output_dir,
             candidates_df=candidates_df,
             invalid_doctor_df=invalid_doc_df,
-            invalid_chemist_df=invalid_chem_df,
+            excluded_chemists_df=excluded_chemists_master,
             summary_data=summary_data,
             config_data=config_used
         )
@@ -520,7 +567,7 @@ def main():
         logger.exception(f"Error saving outputs: {str(e)}")
         sys.exit(1)
         
-    # 11. Move key deliverables to results folder
+    # 10. Move key deliverables to results folder (exactly 2 sheets)
     try:
         publish_to_results(source_dir=args.output_dir, results_dir="results")
     except Exception as e:
@@ -530,3 +577,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
