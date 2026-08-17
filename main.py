@@ -513,7 +513,7 @@ def main():
         "road_distance_calculated": False
     }
     
-    # 9. Write outputs
+    # 9. Write intermediate candidate outputs
     try:
         write_results(
             output_dir=args.output_dir,
@@ -527,13 +527,8 @@ def main():
         logger.exception(f"Error saving outputs: {str(e)}")
         sys.exit(1)
         
-    # 10. Move key deliverables to results folder (exactly 2 sheets)
-    try:
-        publish_to_results(source_dir=args.output_dir, results_dir="results")
-    except Exception as e:
-        logger.warning(f"Could not publish outputs to results folder: {e}")
-        
-    logger.info("Doctor-Chemist Matching Pipeline execution completed successfully.")
+    logger.info(f"Phase 1 candidate generation complete. Files saved to '{args.output_dir}'.")
+    logger.info("Run Phase 2 ('python road_routing.py --routing_engine GraphHopper --threads 8') to calculate real road distances and publish final sheets to 'results/'.")
 
 if __name__ == "__main__":
     main()
