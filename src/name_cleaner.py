@@ -36,7 +36,11 @@ DEFAULT_GENERIC_PATTERNS = [
     r'^(the\s+|a\s+|an\s+)?aushadhi(\s+(kendra|bhandar|store(s)?))?$',
     r'^(the\s+|a\s+|an\s+)?aushadhalaya$',
     r'^(the\s+|a\s+|an\s+)?dispensary$',
-    # Placeholders, missing indicators, single letters, pure digits, and symbols
+    # Placeholders, missing indicators, customer tags, single letters, pure digits, and symbols
+    r'^no\s*(detail(s)?|data|record(s)?|info(rmation)?|name)(\s+(cust(omer)?|\d+))*(\s+.*)?$',
+    r'^not\s*available(\s+.*)?$',
+    r'^cust(omer)?(\s+\d+)?$',
+    r'^(test|dummy|sample|temp|temporary)(\s+(store|shop|chemist|medical|pharmacy|\d+))?$',
     r'^(unknown|na|n\s*a|n/a|null|none|test|sample|dummy|unnamed|no\s*name|nil|not\s*available|undefined|temp|temporary|xyz|abc|demo)$',
     r'^[\.\-_/\\,.:;\'"()\[\]{}|!@#$%^&*+=<>?~`\d\s]+$',
     r'^[a-zA-Z]$'  # Single letter names like "C", "A", "X"

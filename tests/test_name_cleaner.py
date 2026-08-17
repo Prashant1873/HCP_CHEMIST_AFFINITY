@@ -51,6 +51,13 @@ class TestNameCleaner(unittest.TestCase):
 
     def test_placeholders_and_invalid_names(self):
         invalid_samples = [
+            "No Details - Cust - 40002",
+            "No Details - Cust - 800002",
+            "NO DETAILS - CUST - 400067",
+            "no details",
+            "no data available",
+            "not available",
+            "Cust - 99912",
             "Unknown",
             "NA",
             "N/A",
