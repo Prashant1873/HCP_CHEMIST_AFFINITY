@@ -375,11 +375,17 @@ def main():
     top_n_csv = os.path.join(output_dir, f"final_doctor_nearest_{args.final_n}_chemists_by_{prefix}_road_distance.csv")
     top_n_xlsx = os.path.join(output_dir, f"final_doctor_nearest_{args.final_n}_chemists_by_{prefix}_road_distance.xlsx")
     
-    logger.info(f"Saving final nearest {args.final_n} chemists to {top_n_csv}...")
-    df_top_n_clean.to_csv(top_n_csv, index=False)
+    # Also overwrite the primary deliverable names so results/ receives the road distance rankings
+    primary_csv = os.path.join(output_dir, "final_doctor_nearest_5_chemists.csv")
+    primary_xlsx = os.path.join(output_dir, "final_doctor_nearest_5_chemists.xlsx")
     
-    logger.info(f"Saving final nearest {args.final_n} chemists to {top_n_xlsx}...")
+    logger.info(f"Saving final nearest {args.final_n} chemists to {top_n_csv} and {primary_csv}...")
+    df_top_n_clean.to_csv(top_n_csv, index=False)
+    df_top_n_clean.to_csv(primary_csv, index=False)
+    
+    logger.info(f"Saving final nearest {args.final_n} chemists to {top_n_xlsx} and {primary_xlsx}...")
     df_top_n_clean.to_excel(top_n_xlsx, index=False, sheet_name=f"Top {args.final_n} Chemists")
+    df_top_n_clean.to_excel(primary_xlsx, index=False, sheet_name="Top5_Chemists_Road_Distance")
     
     # 6. Generate validation report and aggregate capture summary
     df_detail, df_summary = calculate_capture_rate_analysis(df, final_n=args.final_n)
