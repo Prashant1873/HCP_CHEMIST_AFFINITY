@@ -1,11 +1,34 @@
-# Module for handling road distance computations via OSRM or Simulation
+# Module for handling road distance computations via OSRM, GraphHopper, or Simulation
 import time
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import random
+import threading
 from typing import Tuple, Optional
 from src.utils import setup_logger
 
 logger = setup_logger("routing_engine")
+
+# Thread-local storage for HTTP sessions
+_local_storage = threading.local()
+
+def get_routing_session() -> requests.Session:
+    """Returns a thread-local requests.Session with connection pooling and retries."""
+    if not hasattr(_local_storage, "session"):
+        session = requests.Session()
+        retry_strategy = Retry(
+            total=3,
+            backoff_factor=0.3,
+            status_forcelist=[429, 500, 502, 503, 504],
+            allowed_methods=["GET"]
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=20, pool_maxsize=20)
+        session.mount("http://", adapter)
+        session.mount("https://", adapter)
+        _local_storage.session = session
+    return _local_storage.session
+
 
 def simulate_road_distance(air_distance_km: float) -> float:
     """
@@ -18,6 +41,7 @@ def simulate_road_distance(air_distance_km: float) -> float:
     noise = random.uniform(0.01, 0.20)
     return (air_distance_km * circuity) + noise
 
+
 def query_osrm_road_distance(
     lat1: float,
     lon1: float,
@@ -25,27 +49,22 @@ def query_osrm_road_distance(
     lon2: float,
     endpoint: str = "http://localhost:5000",
     retries: int = 2,
-    timeout_sec: float = 5.0
+    timeout_sec: float = 5.0,
+    session: Optional[requests.Session] = None
 ) -> Tuple[Optional[float], str, Optional[str]]:
     """
     Queries local OSRM endpoint to compute driving road distance between two points.
-    
     Url format: {endpoint}/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=false
-    Note that OSRM requires coordinates in [longitude, latitude] order.
-    
-    Returns:
-        (road_distance_km, road_distance_status, error_message)
     """
-    # Clean endpoint format
     base_url = endpoint.rstrip('/')
-    
-    # OSRM expects: lon1,lat1;lon2,lat2
     url = f"{base_url}/route/v1/driving/{lon1},{lat1};{lon2},{lat2}?overview=false"
+    http_client = session or get_routing_session()
     
+    err_summary = "Unknown error"
     attempt = 0
     while attempt <= retries:
         try:
-            response = requests.get(url, timeout=timeout_sec)
+            response = http_client.get(url, timeout=timeout_sec)
             
             if response.status_code == 200:
                 data = response.json()
@@ -57,25 +76,19 @@ def query_osrm_road_distance(
                     err_msg = f"OSRM error code: {data.get('code', 'Unknown')}"
                     return None, "failed", err_msg
             else:
-                # Retry for server-side errors or bad HTTP statuses
-                logger.warning(
-                    f"OSRM returned status {response.status_code} for URL {url}. "
-                    f"Attempt {attempt + 1}/{retries + 1}."
-                )
+                err_summary = f"OSRM status {response.status_code}"
+                logger.warning(f"OSRM returned status {response.status_code} for URL {url}. Attempt {attempt + 1}/{retries + 1}.")
                 
         except (requests.exceptions.RequestException, Exception) as e:
-            logger.warning(
-                f"Request failed: {str(e)} for URL {url}. "
-                f"Attempt {attempt + 1}/{retries + 1}."
-            )
+            err_summary = str(e)
+            logger.warning(f"Request failed: {err_summary} for URL {url}. Attempt {attempt + 1}/{retries + 1}.")
             
         attempt += 1
         if attempt <= retries:
-            time.sleep(0.5)  # Wait briefly before retrying
+            time.sleep(0.3)
             
-    # All attempts exhausted
-    error_summary = f"Connection failed after {retries + 1} attempts."
-    return None, "failed", error_summary
+    return None, "failed", f"Connection failed after {retries + 1} attempts: {err_summary}"
+
 
 def query_graphhopper_road_distance(
     lat1: float,
@@ -84,23 +97,22 @@ def query_graphhopper_road_distance(
     lon2: float,
     endpoint: str = "http://localhost:8989",
     retries: int = 2,
-    timeout_sec: float = 5.0
+    timeout_sec: float = 5.0,
+    session: Optional[requests.Session] = None
 ) -> Tuple[Optional[float], str, Optional[str]]:
     """
     Queries local GraphHopper endpoint to compute driving road distance between two points.
-    
     Url format: {endpoint}/route?point={lat1},{lon1}&point={lat2},{lon2}&profile=car&locale=en&points_encoded=false
-    
-    Returns:
-        (road_distance_km, road_distance_status, error_message)
     """
     base_url = endpoint.rstrip('/')
     url = f"{base_url}/route?point={lat1},{lon1}&point={lat2},{lon2}&profile=car&locale=en&points_encoded=false"
+    http_client = session or get_routing_session()
     
+    err_msg = "Unknown error"
     attempt = 0
     while attempt <= retries:
         try:
-            response = requests.get(url, timeout=timeout_sec)
+            response = http_client.get(url, timeout=timeout_sec)
             
             if response.status_code == 200:
                 data = response.json()
@@ -117,21 +129,14 @@ def query_graphhopper_road_distance(
                 except Exception:
                     err_msg = f"HTTP status {response.status_code}"
                 
-                logger.warning(
-                    f"GraphHopper returned status {response.status_code} for URL {url}. "
-                    f"Attempt {attempt + 1}/{retries + 1}."
-                )
+                logger.warning(f"GraphHopper returned status {response.status_code} for URL {url}. Attempt {attempt + 1}/{retries + 1}.")
                 
         except (requests.exceptions.RequestException, Exception) as e:
             err_msg = str(e)
-            logger.warning(
-                f"Request failed: {err_msg} for URL {url}. "
-                f"Attempt {attempt + 1}/{retries + 1}."
-            )
+            logger.warning(f"Request failed: {err_msg} for URL {url}. Attempt {attempt + 1}/{retries + 1}.")
             
         attempt += 1
         if attempt <= retries:
-            time.sleep(0.5)
+            time.sleep(0.3)
             
     return None, "failed", f"Connection failed: {err_msg}"
-

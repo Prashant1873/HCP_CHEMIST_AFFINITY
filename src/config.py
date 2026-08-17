@@ -67,3 +67,8 @@ CITY_COLUMNS = [
     "city", "chem_city", "chemist_city", "Doctor City", "doctor_city", 
     "dr_city", "City", "CITY", "chemist_chem_city"
 ]
+
+# Pincode GeoJSON validation settings
+DEFAULT_PINCODE_GEOJSON = "india_pincode.geojson"
+DEFAULT_PINCODE_TOLERANCE_KM = 0.5  # Allowed distance (km) outside polygon boundary for GPS jitter / border leniency
+

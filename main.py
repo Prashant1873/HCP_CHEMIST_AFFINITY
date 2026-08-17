@@ -18,6 +18,7 @@ from src.data_cleaning import clean_and_validate_dataset
 from src.spatial_index import build_ball_tree, find_nearest_chemists
 from src.output_writer import write_results, publish_to_results
 from src.pincode_geocoder import load_pincode_lookup, recover_missing_coordinates
+from src.pincode_validator import PincodeSpatialValidator
 
 logger = setup_logger("main")
 
@@ -83,6 +84,24 @@ def main():
         type=str,
         default=None,
         help="Path to address-geocoded chemist CSV (default: auto-detects outputs/geocoded_chemist_records.csv if present)."
+    )
+    parser.add_argument(
+        "--verify_pincodes",
+        action="store_true",
+        default=False,
+        help="Verify doctor and chemist coordinates against GeoJSON pincode boundaries and filter out mismatches."
+    )
+    parser.add_argument(
+        "--pincode_tolerance_km",
+        type=float,
+        default=config.DEFAULT_PINCODE_TOLERANCE_KM,
+        help=f"Allowed distance (km) outside pincode polygon for border leniency (default: {config.DEFAULT_PINCODE_TOLERANCE_KM} km)."
+    )
+    parser.add_argument(
+        "--pincode_geojson",
+        type=str,
+        default=config.DEFAULT_PINCODE_GEOJSON,
+        help=f"Path to pincode GeoJSON boundary file (default: '{config.DEFAULT_PINCODE_GEOJSON}')."
     )
     
     args = parser.parse_args()
@@ -325,10 +344,48 @@ def main():
             logger.error(f"No chemist records matched city filter '{args.city}'. Matching pipeline terminated.")
             sys.exit(1)
 
+    # 5d. Optional GeoJSON Pincode Boundary Validation
+    pincode_mismatched_docs = pd.DataFrame()
+    pincode_mismatched_chems = pd.DataFrame()
+    if args.verify_pincodes:
+        logger.info(f"Running GeoJSON pincode boundary validation (tolerance: {args.pincode_tolerance_km} km)...")
+        validator = PincodeSpatialValidator(geojson_path=args.pincode_geojson)
+        if validator.is_ready:
+            valid_doc_df, pincode_mismatched_docs, doc_pin_summary = validator.validate_dataframe(
+                df=valid_doc_df,
+                lat_col="doctor_latitude",
+                lon_col="doctor_longitude",
+                pin_col="doctor_pincode",
+                role="doctor",
+                tolerance_km=args.pincode_tolerance_km
+            )
+            valid_chem_df, pincode_mismatched_chems, chem_pin_summary = validator.validate_dataframe(
+                df=valid_chem_df,
+                lat_col="chemist_latitude",
+                lon_col="chemist_longitude",
+                pin_col="chemist_pincode",
+                role="chemist",
+                tolerance_km=args.pincode_tolerance_km
+            )
+            
+            if len(pincode_mismatched_docs) > 0:
+                msg = f"GeoJSON Pincode Validation flagged and removed {len(pincode_mismatched_docs)} doctor records with mismatched coordinates."
+                warnings_list.append(msg)
+                logger.warning(msg)
+                os.makedirs(args.output_dir, exist_ok=True)
+                pincode_mismatched_docs.to_csv(os.path.join(args.output_dir, "pincode_mismatched_doctor_records.csv"), index=False)
+                
+            if len(pincode_mismatched_chems) > 0:
+                msg = f"GeoJSON Pincode Validation flagged and removed {len(pincode_mismatched_chems)} chemist records with mismatched coordinates."
+                warnings_list.append(msg)
+                logger.warning(msg)
+                os.makedirs(args.output_dir, exist_ok=True)
+                pincode_mismatched_chems.to_csv(os.path.join(args.output_dir, "pincode_mismatched_chemist_records.csv"), index=False)
+
     doc_valid_count = len(valid_doc_df)
-    doc_invalid_count = len(invalid_doc_df)
+    doc_invalid_count = len(invalid_doc_df) + len(pincode_mismatched_docs)
     chem_valid_count = len(valid_chem_df)
-    chem_invalid_count = len(invalid_chem_df)
+    chem_invalid_count = len(invalid_chem_df) + len(pincode_mismatched_chems)
     
     if doc_invalid_count > 0:
         msg = f"Flagged {doc_invalid_count} invalid doctor records (written to invalid_doctor_records.csv)"

@@ -4,6 +4,7 @@ import sys
 import time
 import argparse
 from datetime import datetime
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import pandas as pd
 import numpy as np
 from tqdm import tqdm
@@ -65,19 +66,52 @@ def fuzzy_city_match(city_a: str, city_b: str, threshold: float = 0.80) -> bool:
     """
     Returns True if two normalized city strings are similar enough.
     Uses SequenceMatcher (stdlib) for a lightweight edit-distance ratio.
-    Exact matches and substring containment are checked first for speed.
     """
     if not city_a or not city_b:
         return False
     if city_a == city_b:
         return True
-    # Check if one is a substring of the other (handles "mumbai" in "navimumbai" etc.)
     if city_a in city_b or city_b in city_a:
         return True
-    # Fallback to sequence similarity
     from difflib import SequenceMatcher
     ratio = SequenceMatcher(None, city_a, city_b).ratio()
     return ratio >= threshold
+
+
+def _compute_route_single(row_tuple, simulate, routing_engine, endpoint):
+    """Worker task for calculating road distance for a single doctor-chemist pair."""
+    idx, row_dict = row_tuple
+    doc_lat = float(row_dict["doctor_latitude"])
+    doc_lon = float(row_dict["doctor_longitude"])
+    chem_lat = float(row_dict["chemist_latitude"])
+    chem_lon = float(row_dict["chemist_longitude"])
+    air_dist = float(row_dict["air_distance_km"])
+    
+    if simulate:
+        road_dist = simulate_road_distance(air_dist)
+        status = "success"
+        error_msg = None
+        engine = "simulator"
+    else:
+        if routing_engine == "GraphHopper":
+            road_dist, status, error_msg = query_graphhopper_road_distance(
+                lat1=doc_lat,
+                lon1=doc_lon,
+                lat2=chem_lat,
+                lon2=chem_lon,
+                endpoint=endpoint
+            )
+        else:
+            road_dist, status, error_msg = query_osrm_road_distance(
+                lat1=doc_lat,
+                lon1=doc_lon,
+                lat2=chem_lat,
+                lon2=chem_lon,
+                endpoint=endpoint
+            )
+        engine = routing_engine
+        
+    return idx, road_dist, status, engine, error_msg
 
 
 def main():
@@ -108,6 +142,12 @@ def main():
         type=int,
         default=5,
         help="Number of nearest road-distance chemists to select per doctor (default: 5)"
+    )
+    parser.add_argument(
+        "--threads",
+        type=int,
+        default=8,
+        help="Number of concurrent worker threads for routing queries (default: 8)"
     )
     parser.add_argument(
         "--simulate",
@@ -142,7 +182,6 @@ def main():
         else:
             args.osrm_endpoint = "http://localhost:5000"
 
-    
     start_time = time.time()
     run_timestamp = datetime.now().isoformat()
     
@@ -150,7 +189,7 @@ def main():
     if args.simulate:
         logger.info("Simulation mode is enabled. Using simulated driving road distances.")
     else:
-        logger.info(f"Targeting local {args.routing_engine} endpoint: {args.osrm_endpoint}")
+        logger.info(f"Targeting local {args.routing_engine} endpoint: {args.osrm_endpoint} (using {args.threads} worker threads)")
         
     output_dir = os.path.dirname(args.input_file) or "outputs"
     checkpoint_path = os.path.join(output_dir, "road_distance_checkpoint.csv")
@@ -172,20 +211,17 @@ def main():
             if not filt_clean:
                 continue
             filt_mask = pd.Series(False, index=df.index)
-            # Check city columns
             for col in df.columns:
                 if "city" in col.lower():
                     filt_mask |= df[col].astype(str).apply(
                         lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
                     )
-            # Address fallback
             if not filt_mask.any():
                 for col in df.columns:
                     if any(k in col.lower() for k in ["addr", "location"]):
                         filt_mask |= df[col].astype(str).apply(
                             lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
                         )
-            # Numeric pincode prefix fallback if digits provided
             if filt.isdigit():
                 for col in ["doctor_pincode", "chemist_pincode", "chemist_chem_pincode"]:
                     if col in df.columns:
@@ -202,7 +238,6 @@ def main():
     logger.info("Enforcing city consistency filter between doctor and chemist locations...")
     
     def check_city_match(row):
-        # 1. Textual city matching first (handles Kalyan/Thane/Mumbai where pincodes differ)
         doc_city = normalize_city(row.get("Doctor City", row.get("doctor_city", "")))
         chem_city = normalize_city(row.get("chemist_chem_city", row.get("chemist_city", "")))
         if doc_city and chem_city:
@@ -211,13 +246,11 @@ def main():
             if fuzzy_city_match(doc_city, chem_city):
                 return "fuzzy"
         
-        # 2. Check if first 3 digits of doctor and chemist pincode match as fallback
         doc_pin = str(row.get("doctor_pincode", "")).strip()[:3]
         chem_pin = str(row.get("chemist_pincode", row.get("chemist_chem_pincode", ""))).strip()[:3]
         if doc_pin and chem_pin and len(doc_pin) == 3 and len(chem_pin) == 3 and doc_pin == chem_pin:
             return "pincode_prefix"
             
-        # 3. If both city fields are blank, assume matching
         if not doc_city and not chem_city:
             return "exact"
             
@@ -234,16 +267,9 @@ def main():
     if pin_count > 0:
         logger.info(f"Validated {pin_count} candidate pairs via matching 3-digit pincode prefixes.")
     if fuzzy_count > 0:
-        logger.info(
-            f"Retained {fuzzy_count} candidate pairs via fuzzy city-name matching "
-            f"(similar but not identical city names). These are flagged for review."
-        )
-    
+        logger.info(f"Retained {fuzzy_count} candidate pairs via fuzzy city-name matching.")
     if filtered_count > 0:
-        logger.warning(
-            f"Filtered out {filtered_count} candidate pairs due to city coordinate mismatches "
-            f"(e.g., doctor and chemist coordinates are close but they are in different textual cities/pincodes)."
-        )
+        logger.warning(f"Filtered out {filtered_count} candidate pairs due to city coordinate mismatches.")
         
     total_pairs = len(df)
     remaining_pairs = get_remaining_count(df)
@@ -253,66 +279,48 @@ def main():
     logger.info(f"Calculated pairs: {completed_pairs}")
     logger.info(f"Remaining pairs to compute: {remaining_pairs}")
     
-    # 2. Iterate and compute road distances
+    # 2. Iterate and compute road distances with ThreadPoolExecutor
     if remaining_pairs > 0:
-        logger.info("Starting road distance calculations...")
-        count = 0
-        
-        # Iterate over records needing calculation
+        logger.info(f"Starting road distance calculations using {args.threads} worker threads...")
         indices_to_compute = df[df["road_distance_status"] == "not_calculated"].index.tolist()
         
-        for idx in tqdm(indices_to_compute, desc="Calculating road distances", unit="pair"):
-            row = df.loc[idx]
-            
-            # Extract coordinates
-            doc_lat = float(row["doctor_latitude"])
-            doc_lon = float(row["doctor_longitude"])
-            chem_lat = float(row["chemist_latitude"])
-            chem_lon = float(row["chemist_longitude"])
-            air_dist = float(row["air_distance_km"])
-            
-            if args.simulate:
-                # Simulating road distance
-                road_dist = simulate_road_distance(air_dist)
-                status = "success"
-                error_msg = None
-                engine = "simulator"
-            else:
-                if args.routing_engine == "GraphHopper":
-                    road_dist, status, error_msg = query_graphhopper_road_distance(
-                        lat1=doc_lat,
-                        lon1=doc_lon,
-                        lat2=chem_lat,
-                        lon2=chem_lon,
-                        endpoint=args.osrm_endpoint
-                    )
-                else:
-                    road_dist, status, error_msg = query_osrm_road_distance(
-                        lat1=doc_lat,
-                        lon1=doc_lon,
-                        lat2=chem_lat,
-                        lon2=chem_lon,
-                        endpoint=args.osrm_endpoint
-                    )
-                engine = args.routing_engine
+        # Prepare lightweight items for executor (instant vectorized extraction)
+        sub_df = df.loc[indices_to_compute, ["doctor_latitude", "doctor_longitude", "chemist_latitude", "chemist_longitude", "air_distance_km"]]
+        records = sub_df.to_dict(orient="records")
+        task_items = list(zip(indices_to_compute, records))
+        
+        count = 0
+        pbar = tqdm(total=len(indices_to_compute), desc="Calculating road distances", unit="pair")
+        
+        try:
+            with ThreadPoolExecutor(max_workers=args.threads) as executor:
+                future_to_idx = {
+                    executor.submit(_compute_route_single, item, args.simulate, args.routing_engine, args.osrm_endpoint): item[0]
+                    for item in task_items
+                }
                 
-            # Update dataframe in place
-            df.at[idx, "road_distance_km"] = road_dist if road_dist is not None else np.nan
-            df.at[idx, "road_distance_status"] = status
-            df.at[idx, "routing_engine"] = engine
-            df.at[idx, "routing_error_message"] = error_msg if error_msg else np.nan
+                for future in as_completed(future_to_idx):
+                    idx, road_dist, status, engine, error_msg = future.result()
+                    
+                    df.at[idx, "road_distance_km"] = road_dist if road_dist is not None else np.nan
+                    df.at[idx, "road_distance_status"] = status
+                    df.at[idx, "routing_engine"] = engine
+                    df.at[idx, "routing_error_message"] = error_msg if error_msg else np.nan
+                    
+                    count += 1
+                    pbar.update(1)
+                    
+                    if count % args.checkpoint_interval == 0:
+                        save_checkpoint(df, checkpoint_path)
+                        logger.info(f"Checkpoint saved at {count} calculated pairs.")
+                        
+        except KeyboardInterrupt:
+            logger.warning("Routing calculations interrupted by user. Saving current progress...")
+            save_checkpoint(df, checkpoint_path)
+            sys.exit(0)
+        finally:
+            pbar.close()
             
-            count += 1
-            
-            # Optional sleep interval
-            if args.sleep > 0:
-                time.sleep(args.sleep)
-                
-            # Periodically write checkpoint
-            if count % args.checkpoint_interval == 0:
-                save_checkpoint(df, checkpoint_path)
-                logger.info(f"Checkpoint saved at {count} calculated pairs.")
-                
         # Final save of the checkpoint
         save_checkpoint(df, checkpoint_path)
         logger.info("All road distance calculations completed. Final checkpoint saved.")
@@ -333,8 +341,6 @@ def main():
     
     # 4. Rank chemists by road distance within each doctor
     logger.info("Ranking chemist candidates by road distance for each doctor...")
-    
-    # Calculate road_distance_rank
     df["road_distance_rank"] = df.groupby("doctor_id")["road_distance_km"].rank(
         method="first", 
         na_option="bottom"
@@ -343,11 +349,8 @@ def main():
     # 5. Extract top N chemists per doctor
     top_n_mask = (df["road_distance_rank"] <= args.final_n) & (df["road_distance_status"] == "success")
     df_top_n = df[top_n_mask].copy()
-    
-    # Sort final output by doctor_id and road_distance_rank
     df_top_n = df_top_n.sort_values(by=["doctor_id", "road_distance_rank"]).reset_index(drop=True)
     
-    # Columns to include in final output
     final_columns = [
         "doctor_id",
         "doctor_name",
@@ -367,7 +370,7 @@ def main():
         "routing_engine"
     ]
     
-    df_top_n_clean = df_top_n[final_columns]
+    df_top_n_clean = df_top_n[[c for c in final_columns if c in df_top_n.columns]]
     
     top_n_csv = os.path.join(output_dir, f"final_doctor_nearest_{args.final_n}_chemists_by_{prefix}_road_distance.csv")
     top_n_xlsx = os.path.join(output_dir, f"final_doctor_nearest_{args.final_n}_chemists_by_{prefix}_road_distance.xlsx")
@@ -382,7 +385,6 @@ def main():
     df_detail, df_summary = calculate_capture_rate_analysis(df, final_n=args.final_n)
     
     detail_path = os.path.join(output_dir, f"{prefix}_air_rank_capture_analysis.csv")
-    
     if args.simulate:
         summary_path = os.path.join(output_dir, "simulated_candidate_k_capture_summary.csv")
         summary_path_txt = os.path.join(output_dir, "simulated_road_distance_run_summary.txt")
@@ -398,8 +400,11 @@ def main():
     
     # 7. Clean up checkpoint file
     if os.path.exists(checkpoint_path):
-        os.remove(checkpoint_path)
-        logger.info("Calculations completed successfully. Temporary checkpoint file removed.")
+        try:
+            os.remove(checkpoint_path)
+            logger.info("Calculations completed successfully. Temporary checkpoint file removed.")
+        except OSError:
+            pass
         
     # 8. Compile run summary
     runtime_sec = time.time() - start_time
@@ -423,6 +428,7 @@ INPUT INFORMATION:
 ROUTING OPERATIONS STATS:
 - Routing Engine:           {args.routing_engine if not args.simulate else 'N/A (Simulated)'}
 - Endpoint Target:          {args.osrm_endpoint if not args.simulate else 'N/A (Simulated)'}
+- Worker Threads:           {args.threads if not args.simulate else '1'}
 - Successful Routes:        {success_count}
 - Failed Routes:            {failed_count}
 
@@ -454,6 +460,6 @@ VALIDATION SUMMARY OUTPUTS:
         
     logger.info("Phase 2 pipeline execution completed successfully.")
 
+
 if __name__ == "__main__":
     main()
-
