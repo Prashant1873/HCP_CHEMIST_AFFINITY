@@ -10,7 +10,7 @@ import numpy as np
 # Add the current directory to the Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
-from src.utils import setup_logger
+from src.utils import setup_logger, filter_by_city
 from src import config
 from src.data_loader import auto_detect_inputs, load_data_file
 from src.column_detection import detect_coordinates, detect_identifiers
@@ -302,61 +302,12 @@ def main():
     
     # 5c. Optional city filtering by city name
     if args.city:
-        city_filters = [c.strip() for c in str(args.city).split(",") if c.strip()]
-        logger.info(f"Applying city filter: {city_filters}")
-        
-        doc_mask = pd.Series(False, index=valid_doc_df.index)
-        chem_mask = pd.Series(False, index=valid_chem_df.index)
-        
-        for filt in city_filters:
-            filt_clean = "".join(c for c in filt.lower() if c.isalnum())
-            if not filt_clean:
-                continue
-                
-            filt_doc_mask = pd.Series(False, index=valid_doc_df.index)
-            filt_chem_mask = pd.Series(False, index=valid_chem_df.index)
+        logger.info(f"Applying city filter: '{args.city}'")
+        valid_doc_df = filter_by_city(valid_doc_df, args.city)
+        valid_chem_df = filter_by_city(valid_chem_df, args.city)
+        if not invalid_doc_df.empty:
+            invalid_doc_df = filter_by_city(invalid_doc_df, args.city)
             
-            # Match doctor city columns
-            for col in valid_doc_df.columns:
-                if "city" in col.lower():
-                    filt_doc_mask |= valid_doc_df[col].astype(str).apply(
-                        lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
-                    )
-            # Address fallback if no match in city column
-            if not filt_doc_mask.any():
-                for col in valid_doc_df.columns:
-                    if any(k in col.lower() for k in ["addr", "location"]):
-                        filt_doc_mask |= valid_doc_df[col].astype(str).apply(
-                            lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
-                        )
-                        
-            # Match chemist city columns
-            for col in valid_chem_df.columns:
-                if "city" in col.lower():
-                    filt_chem_mask |= valid_chem_df[col].astype(str).apply(
-                        lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
-                    )
-            # Address fallback if no match in city column
-            if not filt_chem_mask.any():
-                for col in valid_chem_df.columns:
-                    if any(k in col.lower() for k in ["addr", "location"]):
-                        filt_chem_mask |= valid_chem_df[col].astype(str).apply(
-                            lambda x: filt_clean in "".join(c for c in str(x).lower() if c.isalnum())
-                        )
-                        
-            # Numeric pincode prefix fallback if digits are provided
-            if filt.isdigit():
-                if "doctor_pincode" in valid_doc_df.columns:
-                    filt_doc_mask |= valid_doc_df["doctor_pincode"].astype(str).str.startswith(filt)
-                if "chemist_pincode" in valid_chem_df.columns:
-                    filt_chem_mask |= valid_chem_df["chemist_pincode"].astype(str).str.startswith(filt)
-                    
-            doc_mask |= filt_doc_mask
-            chem_mask |= filt_chem_mask
-                        
-        valid_doc_df = valid_doc_df[doc_mask].reset_index(drop=True)
-        valid_chem_df = valid_chem_df[chem_mask].reset_index(drop=True)
-        
         logger.info(
             f"Filtered records for city filter '{args.city}': "
             f"{len(valid_doc_df)} doctors and {len(valid_chem_df)} chemists retained."
@@ -452,6 +403,15 @@ def main():
     else:
         excluded_chemists_master = pd.DataFrame()
 
+    # If running for a particular city, filter excluded chemists for that city only
+    if args.city and not excluded_chemists_master.empty:
+        initial_excl_count = len(excluded_chemists_master)
+        excluded_chemists_master = filter_by_city(excluded_chemists_master, args.city)
+        logger.info(
+            f"Filtered excluded chemists for city filter '{args.city}': "
+            f"{len(excluded_chemists_master)}/{initial_excl_count} excluded records retained."
+        )
+
     doc_valid_count = len(valid_doc_df)
     doc_invalid_count = len(invalid_doc_df) + len(pincode_mismatched_docs)
     chem_valid_count = len(valid_chem_df)
@@ -463,7 +423,7 @@ def main():
         logger.warning(msg)
         
     if chem_invalid_count > 0:
-        msg = f"Excluded {chem_invalid_count} chemist records across GPS, Pincode, and Generic Name tests (written to excluded_chemists.csv)"
+        msg = f"Excluded {chem_invalid_count} chemist records for city filter '{args.city}' across GPS, Pincode, and Generic Name tests (written to excluded_chemists.csv)" if args.city else f"Excluded {chem_invalid_count} chemist records across GPS, Pincode, and Generic Name tests (written to excluded_chemists.csv)"
         warnings_list.append(msg)
         logger.info(msg)
 
