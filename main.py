@@ -2,6 +2,7 @@
 import os
 import sys
 import time
+import shutil
 import argparse
 from datetime import datetime
 import pandas as pd
@@ -31,48 +32,49 @@ def main():
         "--doctor_file", 
         type=str, 
         default=None, 
-        help="Path to doctor spreadsheet (CSV/Excel). If omitted, scans current directory."
+        help="Path to doctor input Excel/CSV file (default: auto-detected in workspace)."
     )
     parser.add_argument(
         "--chemist_file", 
         type=str, 
         default=None, 
-        help="Path to chemist spreadsheet (CSV/Excel). If omitted, scans current directory."
-    )
-    parser.add_argument(
-        "--candidate_k", 
-        type=int, 
-        default=config.DEFAULT_CANDIDATE_K, 
-        help=f"Number of nearest air-distance chemists to shortlist per doctor (default: {config.DEFAULT_CANDIDATE_K})."
-    )
-    parser.add_argument(
-        "--final_n", 
-        type=int, 
-        default=config.DEFAULT_FINAL_N, 
-        help=f"Target final number of road-distance chemists to select (default: {config.DEFAULT_FINAL_N})."
-    )
-    parser.add_argument(
-        "--output_dir", 
-        type=str, 
-        default="outputs", 
-        help="Directory to save final output files (default: 'outputs')."
-    )
-    parser.add_argument(
-        "--india_bbox_filter", 
-        type=bool, 
-        default=True, 
-        help="Whether to flag and filter out coordinates outside the approximate India bounding box (default: True)."
+        help="Path to chemist input Excel/CSV file (default: auto-detected in workspace)."
     )
     parser.add_argument(
         "--city", 
         type=str, 
         default=None, 
-        help="Filter dataset by city name (e.g., '--city Mumbai' or '--city Mumbai,Pune'). Supports comma-separated city names."
+        help="Optional city filter (e.g. '--city Mumbai' or '--city Mumbai,Pune')."
+    )
+    parser.add_argument(
+        "--candidate_k", 
+        type=int, 
+        default=config.DEFAULT_CANDIDATE_K, 
+        help=f"Number of nearest chemist candidates to query per doctor (default: {config.DEFAULT_CANDIDATE_K})."
+    )
+    parser.add_argument(
+        "--final_n", 
+        type=int, 
+        default=config.DEFAULT_FINAL_N, 
+        help=f"Number of final nearest chemists to retain per doctor (default: {config.DEFAULT_FINAL_N})."
+    )
+    parser.add_argument(
+        "--output_dir", 
+        type=str, 
+        default=config.OUTPUTS_DIR, 
+        help=f"Directory to save output files (default: '{config.OUTPUTS_DIR}')."
+    )
+    parser.add_argument(
+        "--india_bbox_filter", 
+        action="store_true", 
+        default=config.FILTER_INDIA_BBOX, 
+        help=f"Filter coordinates to India bounding box (default: {config.FILTER_INDIA_BBOX})."
     )
     parser.add_argument(
         "--pincode_fallback", 
         action="store_true", 
-        help="Optional fallback logic to filter candidates that match same pincode (not active by default)."
+        default=False, 
+        help="Prioritize chemists with matching pincode in candidate list (default: False)."
     )
     parser.add_argument(
         "--use_pincode_centroids", 
@@ -136,6 +138,23 @@ def main():
     warnings_list = []
     
     logger.info("Starting doctor-chemist spatial matching pipeline execution...")
+    
+    # 0. Clean/empty outputs folder before starting a new run
+    if os.path.exists(args.output_dir):
+        logger.info(f"Emptying output folder '{args.output_dir}' before starting run...")
+        for fname in os.listdir(args.output_dir):
+            if fname == ".gitkeep":
+                continue
+            fpath = os.path.join(args.output_dir, fname)
+            try:
+                if os.path.isfile(fpath) or os.path.islink(fpath):
+                    os.unlink(fpath)
+                elif os.path.isdir(fpath):
+                    shutil.rmtree(fpath)
+            except Exception as e:
+                logger.warning(f"Could not remove old file '{fpath}': {e}")
+    else:
+        os.makedirs(args.output_dir, exist_ok=True)
     
     # 1. Auto-detect input files if not provided
     doctor_path = args.doctor_file
