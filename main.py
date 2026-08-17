@@ -15,7 +15,12 @@ from src.utils import setup_logger, filter_by_city
 from src import config
 from src.data_loader import auto_detect_inputs, load_data_file
 from src.column_detection import detect_coordinates, detect_identifiers
-from src.data_cleaning import clean_and_validate_dataset
+from src.data_cleaning import (
+    clean_and_validate_dataset,
+    filter_suspicious_coordinate_centroids,
+    filter_incomplete_addresses
+)
+from src.entity_resolver import resolve_and_deduplicate_chemists
 from src.spatial_index import build_ball_tree, find_nearest_chemists
 from src.output_writer import write_results, publish_to_results
 from src.pincode_geocoder import load_pincode_lookup, recover_missing_coordinates
@@ -123,6 +128,54 @@ def main():
         dest="exclude_generic_names",
         action="store_false",
         help="Disable filtering of generic chemist store names."
+    )
+    parser.add_argument(
+        "--purge_centroids",
+        action="store_true",
+        default=config.PURGE_SYNTHETIC_CENTROIDS,
+        help="Purge synthetic centroid collisions (points where >= 3 unrelated stores share coordinates) (default: True)."
+    )
+    parser.add_argument(
+        "--no_purge_centroids",
+        dest="purge_centroids",
+        action="store_false",
+        help="Disable purging of synthetic centroid collisions."
+    )
+    parser.add_argument(
+        "--dedup_chemists",
+        action="store_true",
+        default=config.ENABLE_ENTITY_DEDUPLICATION,
+        help="Consolidate multi-IQVIA duplicate records and GPS jitter for the same physical pharmacy (default: True)."
+    )
+    parser.add_argument(
+        "--no_dedup_chemists",
+        dest="dedup_chemists",
+        action="store_false",
+        help="Disable multi-IQVIA entity deduplication."
+    )
+    parser.add_argument(
+        "--spatial_dedup_radius_m",
+        type=float,
+        default=config.DEDUP_SPATIAL_RADIUS_M,
+        help=f"Spatial radius in meters for micro-proximity deduplication (default: {config.DEDUP_SPATIAL_RADIUS_M}m)."
+    )
+    parser.add_argument(
+        "--name_similarity_threshold",
+        type=float,
+        default=config.DEDUP_NAME_SIMILARITY_THRESHOLD,
+        help=f"Similarity threshold to merge store records (default: {config.DEDUP_NAME_SIMILARITY_THRESHOLD})."
+    )
+    parser.add_argument(
+        "--filter_incomplete_addresses",
+        action="store_true",
+        default=True,
+        help="Exclude records with missing or placeholder addresses (default: True)."
+    )
+    parser.add_argument(
+        "--no_address_filter",
+        dest="filter_incomplete_addresses",
+        action="store_false",
+        help="Disable address completeness filter."
     )
     parser.add_argument(
         "--max_distance_km",
@@ -396,6 +449,56 @@ def main():
                 index=False
             )
 
+    # 5f. Address Quality & Completeness Filtering
+    excluded_incomplete_chems = pd.DataFrame()
+    if args.filter_incomplete_addresses:
+        valid_chem_df, excluded_incomplete_chems, addr_summary = filter_incomplete_addresses(
+            df=valid_chem_df,
+            addr_col=None,
+            min_length=config.MIN_ADDRESS_LENGTH,
+            role="chemist"
+        )
+        if len(excluded_incomplete_chems) > 0:
+            msg = f"Excluded {len(excluded_incomplete_chems)} chemist records with missing or placeholder addresses."
+            warnings_list.append(msg)
+            logger.info(msg)
+
+    # 5g. Centroid Anomaly & Geocoder False-Cluster Purge
+    excluded_centroid_chems = pd.DataFrame()
+    if args.purge_centroids:
+        valid_chem_df, excluded_centroid_chems, centroid_summary = filter_suspicious_coordinate_centroids(
+            df=valid_chem_df,
+            lat_col="chemist_latitude",
+            lon_col="chemist_longitude",
+            name_col="chemist_name",
+            max_unrelated_per_coord=config.MAX_UNRELATED_STORES_PER_CENTROID,
+            role="chemist"
+        )
+        if len(excluded_centroid_chems) > 0:
+            msg = f"Purged {len(excluded_centroid_chems)} chemist records sitting on {centroid_summary.get('centroid_locations_count', 0)} synthetic city/geocoder centroid points."
+            warnings_list.append(msg)
+            logger.warning(msg)
+
+    # 5h. Multi-Pass Entity Resolution & Multi-IQVIA Deduplication
+    merged_duplicate_chems = pd.DataFrame()
+    dedup_metrics = {}
+    if args.dedup_chemists:
+        logger.info("Executing Multi-Pass Entity Resolution & Multi-IQVIA Deduplication...")
+        valid_chem_df, merged_duplicate_chems, dedup_metrics = resolve_and_deduplicate_chemists(
+            df=valid_chem_df,
+            lat_col="chemist_latitude",
+            lon_col="chemist_longitude",
+            name_col="chemist_name",
+            id_col="chemist_id",
+            pin_col="chemist_pincode",
+            spatial_proximity_m=args.spatial_dedup_radius_m,
+            name_similarity_threshold=args.name_similarity_threshold
+        )
+        if len(merged_duplicate_chems) > 0:
+            msg = f"Consolidated {len(merged_duplicate_chems)} duplicate IQVIA records into canonical physical pharmacy entities ({dedup_metrics.get('deduplication_rate_pct', 0)}% reduction)."
+            warnings_list.append(msg)
+            logger.info(msg)
+
     # Consolidate ALL excluded chemists across all exclusion stages
     excluded_chemists_list = []
     
@@ -416,6 +519,18 @@ def main():
         df_gen["exclusion_stage"] = "GENERIC_NAME_EXCLUSION"
         df_gen["exclusion_reason"] = df_gen["generic_exclusion_reason"] if "generic_exclusion_reason" in df_gen.columns else "Generic placeholder store name"
         excluded_chemists_list.append(df_gen)
+
+    if len(excluded_incomplete_chems) > 0:
+        df_inc = excluded_incomplete_chems.copy()
+        df_inc["exclusion_stage"] = "INCOMPLETE_ADDRESS_EXCLUSION"
+        df_inc["exclusion_reason"] = df_inc["address_exclusion_reason"] if "address_exclusion_reason" in df_inc.columns else "Missing or placeholder address"
+        excluded_chemists_list.append(df_inc)
+
+    if len(excluded_centroid_chems) > 0:
+        df_cent = excluded_centroid_chems.copy()
+        df_cent["exclusion_stage"] = "SYNTHETIC_CENTROID_EXCLUSION"
+        df_cent["exclusion_reason"] = df_cent["centroid_rejection_reason"] if "centroid_rejection_reason" in df_cent.columns else "Synthetic centroid collision point"
+        excluded_chemists_list.append(df_cent)
         
     if excluded_chemists_list:
         excluded_chemists_master = pd.concat(excluded_chemists_list, ignore_index=True)
@@ -442,22 +557,11 @@ def main():
         logger.warning(msg)
         
     if chem_invalid_count > 0:
-        msg = f"Excluded {chem_invalid_count} chemist records for city filter '{args.city}' across GPS, Pincode, and Generic Name tests (written to excluded_chemists.csv)" if args.city else f"Excluded {chem_invalid_count} chemist records across GPS, Pincode, and Generic Name tests (written to excluded_chemists.csv)"
+        msg = f"Excluded {chem_invalid_count} chemist records for city filter '{args.city}' across GPS, Pincode, Generic, Address, and Centroid tests (written to excluded_chemists.csv)" if args.city else f"Excluded {chem_invalid_count} chemist records across GPS, Pincode, Generic, Address, and Centroid tests (written to excluded_chemists.csv)"
         warnings_list.append(msg)
         logger.info(msg)
 
-    # 5f. Deduplication safeguard on chemist dataset before building spatial index
-    initial_chem_pool = len(valid_chem_df)
-    if "chemist_id" in valid_chem_df.columns and valid_chem_df["chemist_id"].notna().any():
-        valid_chem_df = valid_chem_df.drop_duplicates(subset=["chemist_id"]).reset_index(drop=True)
-    else:
-        valid_chem_df = valid_chem_df.drop_duplicates(subset=["chemist_name", "chemist_latitude", "chemist_longitude"]).reset_index(drop=True)
-        
-    dedup_removed = initial_chem_pool - len(valid_chem_df)
-    if dedup_removed > 0:
-        logger.info(f"Deduplication safeguard: removed {dedup_removed} duplicate chemist records before spatial indexing.")
-        
-    # 6. Build Spatial Index & Query Nearest Neighbors (Hard filtered to <= 1.0 km)
+    # 6. Build Spatial Index & Query Nearest Neighbors (Hard filtered to <= 1.0 km on canonical master entities)
     try:
         tree, _ = build_ball_tree(valid_chem_df)
         candidates_df = find_nearest_chemists(
@@ -506,6 +610,9 @@ def main():
         "chemist_gps_invalid_count": len(invalid_chem_df),
         "chemist_pincode_mismatched_count": len(pincode_mismatched_chems),
         "chemist_generic_excluded_count": len(excluded_generic_chems),
+        "chemist_incomplete_address_count": len(excluded_incomplete_chems),
+        "chemist_centroid_purged_count": len(excluded_centroid_chems),
+        "chemist_merged_duplicate_aliases_count": len(merged_duplicate_chems),
         "candidate_k": args.candidate_k,
         "final_n": args.final_n,
         "max_distance_km": args.max_distance_km,
@@ -529,6 +636,8 @@ def main():
         "max_distance_km": args.max_distance_km,
         "earth_radius_km": config.EARTH_RADIUS_KM,
         "india_bbox_filter": args.india_bbox_filter,
+        "purge_centroids": args.purge_centroids,
+        "dedup_chemists": args.dedup_chemists,
         "road_distance_calculated": False
     }
     
@@ -540,7 +649,8 @@ def main():
             invalid_doctor_df=invalid_doc_df,
             excluded_chemists_df=excluded_chemists_master,
             summary_data=summary_data,
-            config_data=config_used
+            config_data=config_used,
+            merged_duplicates_df=merged_duplicate_chems
         )
     except Exception as e:
         logger.exception(f"Error saving outputs: {str(e)}")
@@ -551,4 +661,5 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 

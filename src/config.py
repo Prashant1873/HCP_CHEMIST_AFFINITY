@@ -75,10 +75,27 @@ CITY_COLUMNS = [
 
 # Pincode GeoJSON validation settings
 DEFAULT_PINCODE_GEOJSON = "india_pincode.geojson"
-DEFAULT_PINCODE_TOLERANCE_KM = 0.5  # Allowed distance (km) outside polygon boundary for GPS jitter / border leniency
+DEFAULT_PINCODE_TOLERANCE_KM = 0.3  # Allowed distance (km) outside polygon boundary for GPS jitter / border leniency
 
 # Generic Name Filtering settings
 EXCLUDE_GENERIC_CHEMIST_NAMES = True  # Automatically filter generic names like Chemist, Medical, Pharmacy, Drug Store
-ADDITIONAL_GENERIC_KEYWORDS = []  # Extra user-specified keywords to exclude
+ADDITIONAL_GENERIC_KEYWORDS = ["STOCKIST", "CUSTOMER"]  # Extra user-specified keywords to exclude
+
+# Address Quality & Centroid Anomaly settings
+MIN_ADDRESS_LENGTH = 5  # Minimum character length for informative address
+MAX_UNRELATED_STORES_PER_CENTROID = 3  # Max unrelated store names at identical coordinates before flagging as synthetic centroid
+PURGE_SYNTHETIC_CENTROIDS = True  # Automatically purge suspicious centroid clusters
+
+# Entity Resolution & Deduplication settings
+DEDUP_SPATIAL_RADIUS_M = 30.0  # Spatial radius in meters to search for duplicate pharmacies
+DEDUP_NAME_SIMILARITY_THRESHOLD = 0.70  # Token similarity threshold to merge store records
+ENABLE_ENTITY_DEDUPLICATION = True  # Consolidate multiple IQVIA IDs for same physical pharmacy
+
+# Potential address columns
+ADDRESS_COLUMNS = [
+    "chem_address", "chemist_address", "Final address", "address", "Address", 
+    "street_address", "Street", "addr", "Location"
+]
+
 
 

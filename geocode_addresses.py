@@ -272,24 +272,48 @@ def build_query_hierarchy(row: pd.Series) -> List[str]:
     return unique_queries
 
 
+from src.pincode_validator import PincodeSpatialValidator
+
 def geocode_single_record(
     row: pd.Series,
     geocoder: BaseGeocoder,
-    pincode_lookup: Dict[str, Tuple[float, float]]
+    pincode_lookup: Dict[str, Tuple[float, float]],
+    validator: Optional[PincodeSpatialValidator] = None
 ) -> Dict[str, Any]:
     """
     Geocodes an individual chemist record using the query hierarchy with 
-    automated offline pincode centroid fallback.
+    strict GeoJSON spatial validation and automated offline pincode centroid fallback.
     """
+    raw_pin = str(row.get("chem_pincode", row.get("chemist_pincode", ""))).strip()
+    if raw_pin and "." in raw_pin:
+        raw_pin = raw_pin.split(".")[0]
+    pin_digits = "".join(c for c in raw_pin if c.isdigit())
+    if len(pin_digits) > 6:
+        pin_digits = pin_digits[:6]
+
     queries = build_query_hierarchy(row)
     
-    # Try online geocoding queries
+    # Try online geocoding queries with strict spatial bounding verification
     for q in queries:
         res = geocoder.geocode(q)
         if res:
             lat, lon, disp = res
             if (config.INDIA_LAT_MIN <= lat <= config.INDIA_LAT_MAX) and \
                (config.INDIA_LON_MIN <= lon <= config.INDIA_LON_MAX):
+                
+                # Spatial Boundary Gate: Check if coordinate falls inside stated pincode
+                if validator and validator.is_ready and pin_digits and (pin_digits in validator.pin_to_geom):
+                    val_res = validator.validate_coordinate(
+                        lat=lat,
+                        lon=lon,
+                        stated_pincode=pin_digits,
+                        tolerance_km=config.DEFAULT_PINCODE_TOLERANCE_KM
+                    )
+                    if not val_res["is_valid"]:
+                        # Geocoder returned an out-of-pincode false match (e.g. Nagpur instead of Mumbai); reject it!
+                        logger.debug(f"Discarding out-of-pincode geocoder result for '{q}' -> ({lat}, {lon}) vs stated pin {pin_digits}")
+                        continue
+                
                 return {
                     "geocoded_latitude": str(lat),
                     "geocoded_longitude": str(lon),
@@ -299,10 +323,6 @@ def geocode_single_record(
                 }
                 
     # Offline Fallback: Pincode Centroid Lookup
-    raw_pin = str(row.get("chem_pincode", row.get("chemist_pincode", ""))).strip()
-    if raw_pin and "." in raw_pin:
-        raw_pin = raw_pin.split(".")[0]
-    pin_digits = "".join(c for c in raw_pin if c.isdigit())
     if len(pin_digits) == 6 and pin_digits in pincode_lookup:
         c_lat, c_lon = pincode_lookup[pin_digits]
         return {
@@ -320,6 +340,7 @@ def geocode_single_record(
         "geocoded_status": "not_found",
         "coordinate_source": "none"
     }
+
 
 
 def load_existing_geocoded_map(filepaths: List[str]) -> Dict[str, Dict[str, str]]:
@@ -440,6 +461,13 @@ def main():
     # Load offline pincode centroid lookup for zero-failure fallback
     pincode_lookup = load_pincode_lookup()
     logger.info(f"Loaded {len(pincode_lookup)} pincode centroids for instant offline fallback.")
+    
+    # Load GeoJSON spatial validator for bounding gate
+    validator = PincodeSpatialValidator()
+    if validator.is_ready:
+        logger.info("Pincode GeoJSON boundary validator loaded for geocoding accuracy.")
+    else:
+        logger.warning("Pincode GeoJSON validator not active. Geocoding will run without polygon boundary gating.")
     
     # Filter by city name if provided
     if args.city:
@@ -562,7 +590,7 @@ def main():
             logger.info(f"Running multi-threaded geocoding with {args.threads} workers.")
             with ThreadPoolExecutor(max_workers=args.threads) as executor:
                 future_to_idx = {
-                    executor.submit(geocode_single_record, df.loc[idx], geocoder, pincode_lookup): idx
+                    executor.submit(geocode_single_record, df.loc[idx], geocoder, pincode_lookup, validator): idx
                     for idx in pending_indices
                 }
                 count = 0
@@ -580,7 +608,7 @@ def main():
         else:
             count = 0
             for idx in pending_indices:
-                res = geocode_single_record(df.loc[idx], geocoder, pincode_lookup)
+                res = geocode_single_record(df.loc[idx], geocoder, pincode_lookup, validator)
                 for k, v in res.items():
                     df.at[idx, k] = v
                 if res["geocoded_status"] == "success":

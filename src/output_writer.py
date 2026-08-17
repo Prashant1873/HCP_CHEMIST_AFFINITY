@@ -15,11 +15,12 @@ def write_results(
     invalid_doctor_df: pd.DataFrame,
     excluded_chemists_df: pd.DataFrame,
     summary_data: Dict[str, Any],
-    config_data: Dict[str, Any]
+    config_data: Dict[str, Any],
+    merged_duplicates_df: Optional[pd.DataFrame] = None
 ) -> None:
     """
     Saves final doctor-chemist mappings, consolidated excluded chemists, invalid doctors,
-    summary, and config to the outputs folder.
+    merged duplicate chemist aliases, summary, and config to the outputs folder.
     """
     os.makedirs(output_dir, exist_ok=True)
     
@@ -53,10 +54,22 @@ def write_results(
     except Exception as e:
         logger.warning(f"Could not save Excel format for excluded chemists: {e}")
         
+    # 2b. Save merged multi-IQVIA duplicate aliases if present
+    if merged_duplicates_df is not None and not merged_duplicates_df.empty:
+        merged_csv = os.path.join(output_dir, "merged_duplicate_chemist_aliases.csv")
+        merged_xlsx = os.path.join(output_dir, "merged_duplicate_chemist_aliases.xlsx")
+        logger.info(f"Saving merged duplicate chemist aliases ({len(merged_duplicates_df)} rows) to {merged_csv}...")
+        merged_duplicates_df.to_csv(merged_csv, index=False)
+        try:
+            merged_duplicates_df.to_excel(merged_xlsx, index=False, sheet_name="Merged_Aliases")
+        except Exception as e:
+            logger.warning(f"Could not save Excel format for merged duplicates: {e}")
+            
     # 3. Save invalid doctor records
     invalid_doc_path = os.path.join(output_dir, "invalid_doctor_records.csv")
     logger.info(f"Saving invalid doctor records to {invalid_doc_path}...")
     invalid_doctor_df.to_csv(invalid_doc_path, index=False)
+
     
     # 4. Save config file
     config_path = os.path.join(output_dir, "config_used.json")

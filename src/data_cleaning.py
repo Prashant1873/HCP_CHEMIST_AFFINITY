@@ -154,3 +154,163 @@ def clean_and_validate_dataset(
     logger.info(f"{role.capitalize()} dataset cleaning complete: {len(valid_df)} valid, {len(invalid_df)} invalid.")
     return valid_df, invalid_df
 
+
+def filter_suspicious_coordinate_centroids(
+    df: pd.DataFrame,
+    lat_col: str,
+    lon_col: str,
+    name_col: str,
+    max_unrelated_per_coord: int = config.MAX_UNRELATED_STORES_PER_CENTROID,
+    role: str = "chemist"
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+    """
+    Identifies and purges synthetic centroid collisions (points where multiple unrelated 
+    store names collapse onto the exact same city/pincode centroid coordinate).
+    
+    Returns:
+        Tuple of:
+            - clean_df: Records without centroid collisions
+            - centroid_df: Flagged records sitting on synthetic centroids
+            - summary: Metric summary
+    """
+    if df.empty or lat_col not in df.columns or lon_col not in df.columns:
+        return df.copy(), pd.DataFrame(), {
+            "total_records": len(df),
+            "retained_records": len(df),
+            "centroid_collision_records": 0
+        }
+        
+    from src.entity_resolver import normalize_chemist_name
+    
+    df_work = df.copy()
+    
+    # Round coordinates to 6 decimals (~10cm precision)
+    lats = pd.to_numeric(df_work[lat_col], errors='coerce').round(6)
+    lons = pd.to_numeric(df_work[lon_col], errors='coerce').round(6)
+    df_work["_coord_key"] = list(zip(lats, lons))
+    
+    # Group by coordinate key and count distinct normalized names
+    coord_stats: Dict[Tuple[float, float], Set[str]] = {}
+    for idx, r in df_work.iterrows():
+        key = r["_coord_key"]
+        if pd.isna(key[0]) or pd.isna(key[1]):
+            continue
+        nm = normalize_chemist_name(r.get(name_col, ""))
+        if not nm:
+            nm = str(r.get(name_col, "")).strip().upper()
+        if key not in coord_stats:
+            coord_stats[key] = set()
+        if nm:
+            coord_stats[key].add(nm)
+            
+    # Find coordinate keys that have >= max_unrelated_per_coord distinct unrelated stores
+    # (plus at least 4 total records at that location)
+    coord_counts = df_work["_coord_key"].value_counts().to_dict()
+    centroid_keys = set()
+    for key, distinct_names in coord_stats.items():
+        total_at_coord = coord_counts.get(key, 0)
+        if len(distinct_names) >= max_unrelated_per_coord and total_at_coord >= 4:
+            centroid_keys.add(key)
+            
+    is_centroid = df_work["_coord_key"].isin(centroid_keys)
+    df_work["centroid_collision_flag"] = is_centroid
+    df_work["centroid_rejection_reason"] = np.where(
+        is_centroid,
+        f"Synthetic centroid collision (>= {max_unrelated_per_coord} unrelated stores at identical coordinates)",
+        ""
+    )
+    
+    centroid_df = df_work[is_centroid].copy().drop(columns=["_coord_key"]).reset_index(drop=True)
+    clean_df = df_work[~is_centroid].copy().drop(columns=["_coord_key", "centroid_collision_flag", "centroid_rejection_reason"]).reset_index(drop=True)
+    
+    summary = {
+        "role": role,
+        "total_records": len(df),
+        "retained_records": len(clean_df),
+        "centroid_collision_records": len(centroid_df),
+        "centroid_locations_count": len(centroid_keys)
+    }
+    
+    if len(centroid_df) > 0:
+        logger.warning(
+            f"Centroid Filter ({role}): Flagged and removed {len(centroid_df)} records sitting on "
+            f"{len(centroid_keys)} synthetic centroid/geocoder collision points."
+        )
+        
+    return clean_df, centroid_df, summary
+
+
+def filter_incomplete_addresses(
+    df: pd.DataFrame,
+    addr_col: Optional[str] = None,
+    min_length: int = config.MIN_ADDRESS_LENGTH,
+    role: str = "chemist"
+) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, Any]]:
+    """
+    Filters out records with missing, placeholder, or uninformative addresses.
+    """
+    if df.empty:
+        return df.copy(), pd.DataFrame(), {
+            "total_records": 0,
+            "retained_records": 0,
+            "incomplete_address_records": 0
+        }
+        
+    # Auto-detect address column
+    if not addr_col or addr_col not in df.columns:
+        for cand in config.ADDRESS_COLUMNS:
+            if cand in df.columns:
+                addr_col = cand
+                break
+                
+    if not addr_col or addr_col not in df.columns:
+        # If no address column in dataset, do not filter
+        return df.copy(), pd.DataFrame(), {
+            "total_records": len(df),
+            "retained_records": len(df),
+            "incomplete_address_records": 0
+        }
+        
+    df_work = df.copy()
+    
+    def is_invalid_addr(val: Any) -> bool:
+        if pd.isna(val) or val is None:
+            return True
+        s = str(val).strip().upper()
+        if len(s) < min_length:
+            return True
+        if s in ["0", "NA", "N/A", "NULL", "NONE", "UNKNOWN", "NIL", "-", ".", "--", "---"]:
+            return True
+        # Purely numbers and symbols (e.g. "0000", "123")
+        clean_text = "".join(c for c in s if c.isalpha())
+        if len(clean_text) < 2:
+            return True
+        return False
+        
+    invalid_mask = df_work[addr_col].apply(is_invalid_addr)
+    
+    df_work["address_exclusion_reason"] = np.where(
+        invalid_mask,
+        "Missing, placeholder, or uninformative address",
+        ""
+    )
+    
+    incomplete_df = df_work[invalid_mask].copy().reset_index(drop=True)
+    clean_df = df_work[~invalid_mask].copy().drop(columns=["address_exclusion_reason"]).reset_index(drop=True)
+    
+    summary = {
+        "role": role,
+        "address_column": addr_col,
+        "total_records": len(df),
+        "retained_records": len(clean_df),
+        "incomplete_address_records": len(incomplete_df)
+    }
+    
+    if len(incomplete_df) > 0:
+        logger.info(
+            f"Address Filter ({role}): Excluded {len(incomplete_df)}/{len(df)} records with missing/placeholder addresses."
+        )
+        
+    return clean_df, incomplete_df, summary
+
+
