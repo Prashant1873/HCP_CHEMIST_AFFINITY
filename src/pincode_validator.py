@@ -262,31 +262,36 @@ class PincodeSpatialValidator:
                     "rejection_reason": reason
                 }
         
-        # 2. If stated pincode is not found in GeoJSON
+        # 2. If stated pincode is not found in GeoJSON reference database
         actual_pin = self.find_containing_pincode(pt)
         act_office = self.pin_to_meta.get(actual_pin, {}).get("office_name", "") if actual_pin else ""
         act_circle = self.pin_to_meta.get(actual_pin, {}).get("circle", "") if actual_pin else ""
 
         if not clean_pin:
+            # Pincode was empty/missing, but coordinates fall in India
             return {
-                "is_valid": False,
-                "status": "MISSING_STATED_PINCODE",
+                "is_valid": True,
+                "status": "MISSING_STATED_PINCODE_RETAINED",
                 "distance_km": None,
                 "actual_pincode": actual_pin,
                 "actual_office_name": act_office,
                 "actual_circle": act_circle,
-                "rejection_reason": f"No pincode provided in record (coordinates fall in {actual_pin})" if actual_pin else "No pincode provided in record"
+                "rejection_reason": ""
             }
         else:
+            # Stated pincode is not in GeoJSON reference polygons.
+            # Since GeoJSON does not contain this polygon, it is not conclusive evidence of wrong data.
+            # Retain the record as valid.
             return {
-                "is_valid": False,
-                "status": "PINCODE_NOT_IN_REFERENCE",
+                "is_valid": True,
+                "status": "PINCODE_NOT_IN_REFERENCE_RETAINED",
                 "distance_km": None,
-                "actual_pincode": actual_pin,
+                "actual_pincode": actual_pin or clean_pin,
                 "actual_office_name": act_office,
                 "actual_circle": act_circle,
-                "rejection_reason": f"Stated pincode '{clean_pin}' not found in GeoJSON database (coordinates fall in {actual_pin})" if actual_pin else f"Stated pincode '{clean_pin}' not found in GeoJSON"
+                "rejection_reason": ""
             }
+
 
     def validate_dataframe(
         self,
