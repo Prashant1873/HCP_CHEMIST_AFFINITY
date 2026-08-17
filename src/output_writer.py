@@ -123,10 +123,11 @@ def publish_to_results(
     results_dir: str = "results"
 ) -> None:
     """
-    Cleans the results directory (preserving .gitkeep) and copies ONLY the TWO requested
-    deliverable files:
+    Cleans the results directory (preserving .gitkeep) and copies the deliverable sheets
+    and run summary text file:
     1. final_doctor_nearest_5_chemists (Excel & CSV)
     2. excluded_chemists (Excel & CSV)
+    3. run_summary.txt (Detailed execution summary)
     """
     os.makedirs(results_dir, exist_ok=True)
     
@@ -145,12 +146,14 @@ def publish_to_results(
             
     logger.info(f"Cleaned '{results_dir}' folder.")
     
-    # 2. Copy ONLY the two requested sheets (Excel and CSV formats)
+    # 2. Copy the deliverable sheets and summary text file
     target_files = [
         "final_doctor_nearest_5_chemists.xlsx",
         "final_doctor_nearest_5_chemists.csv",
         "excluded_chemists.xlsx",
-        "excluded_chemists.csv"
+        "excluded_chemists.csv",
+        "run_summary.txt",
+        "real_osrm_road_distance_run_summary.txt"
     ]
     
     copied_count = 0
@@ -162,5 +165,6 @@ def publish_to_results(
             logger.info(f"Published to results: {fname}")
             copied_count += 1
             
-    logger.info(f"Published {copied_count} deliverable files to '{results_dir}' folder (exactly 2 sheets: final_doctor_nearest_5_chemists and excluded_chemists).")
+    logger.info(f"Published {copied_count} deliverable files to '{results_dir}' folder (final candidates, excluded chemists, and run summary).")
+
 

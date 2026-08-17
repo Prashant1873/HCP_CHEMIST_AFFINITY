@@ -387,10 +387,10 @@ def main():
     detail_path = os.path.join(output_dir, f"{prefix}_air_rank_capture_analysis.csv")
     if args.simulate:
         summary_path = os.path.join(output_dir, "simulated_candidate_k_capture_summary.csv")
-        summary_path_txt = os.path.join(output_dir, "simulated_road_distance_run_summary.txt")
+        summary_path_txt = os.path.join(output_dir, "run_summary.txt")
     else:
         summary_path = os.path.join(output_dir, "real_osrm_candidate_k_capture_summary.csv")
-        summary_path_txt = os.path.join(output_dir, "real_osrm_road_distance_run_summary.txt")
+        summary_path_txt = os.path.join(output_dir, "run_summary.txt")
     
     logger.info(f"Saving detailed capture rate analysis to {detail_path}...")
     df_detail.to_csv(detail_path, index=False)
