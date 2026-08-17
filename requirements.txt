@@ -1,8 +1,0 @@
-# Production requirements for spatial nearest-neighbor search
-pandas
-numpy
-scikit-learn
-openpyxl
-xlrd
-tqdm
-shapely
