@@ -19,6 +19,7 @@ from src.spatial_index import build_ball_tree, find_nearest_chemists
 from src.output_writer import write_results, publish_to_results
 from src.pincode_geocoder import load_pincode_lookup, recover_missing_coordinates
 from src.pincode_validator import PincodeSpatialValidator
+from src.name_cleaner import filter_generic_names
 
 logger = setup_logger("main")
 
@@ -102,6 +103,18 @@ def main():
         type=str,
         default=config.DEFAULT_PINCODE_GEOJSON,
         help=f"Path to pincode GeoJSON boundary file (default: '{config.DEFAULT_PINCODE_GEOJSON}')."
+    )
+    parser.add_argument(
+        "--exclude_generic_names",
+        action="store_true",
+        default=config.EXCLUDE_GENERIC_CHEMIST_NAMES,
+        help="Exclude generic placeholder store names like 'Chemist', 'Medical', 'Pharmacy', 'Drug Store' (default: True)."
+    )
+    parser.add_argument(
+        "--no_generic_filter",
+        dest="exclude_generic_names",
+        action="store_false",
+        help="Disable filtering of generic chemist store names."
     )
     
     args = parser.parse_args()
@@ -382,10 +395,29 @@ def main():
                 os.makedirs(args.output_dir, exist_ok=True)
                 pincode_mismatched_chems.to_csv(os.path.join(args.output_dir, "pincode_mismatched_chemist_records.csv"), index=False)
 
+    # 5e. Generic Name Filtering (exclude pure placeholders like 'Chemist', 'Medical', 'Pharmacy', 'Drug Store')
+    excluded_generic_chems = pd.DataFrame()
+    if args.exclude_generic_names:
+        valid_chem_df, excluded_generic_chems, generic_summary = filter_generic_names(
+            df=valid_chem_df,
+            name_col="chemist_name",
+            role="chemist",
+            additional_keywords=config.ADDITIONAL_GENERIC_KEYWORDS
+        )
+        if len(excluded_generic_chems) > 0:
+            msg = f"Excluded {len(excluded_generic_chems)} chemist records with generic/placeholder names (e.g. 'Chemist', 'Medical', 'Pharmacy', 'Drug Store')."
+            warnings_list.append(msg)
+            logger.info(msg)
+            os.makedirs(args.output_dir, exist_ok=True)
+            excluded_generic_chems.to_csv(
+                os.path.join(args.output_dir, "excluded_generic_chemist_records.csv"),
+                index=False
+            )
+
     doc_valid_count = len(valid_doc_df)
     doc_invalid_count = len(invalid_doc_df) + len(pincode_mismatched_docs)
     chem_valid_count = len(valid_chem_df)
-    chem_invalid_count = len(invalid_chem_df) + len(pincode_mismatched_chems)
+    chem_invalid_count = len(invalid_chem_df) + len(pincode_mismatched_chems) + len(excluded_generic_chems)
     
     if doc_invalid_count > 0:
         msg = f"Flagged {doc_invalid_count} invalid doctor records (written to invalid_doctor_records.csv)"

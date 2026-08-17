@@ -72,3 +72,8 @@ CITY_COLUMNS = [
 DEFAULT_PINCODE_GEOJSON = "india_pincode.geojson"
 DEFAULT_PINCODE_TOLERANCE_KM = 0.5  # Allowed distance (km) outside polygon boundary for GPS jitter / border leniency
 
+# Generic Name Filtering settings
+EXCLUDE_GENERIC_CHEMIST_NAMES = True  # Automatically filter generic names like Chemist, Medical, Pharmacy, Drug Store
+ADDITIONAL_GENERIC_KEYWORDS = []  # Extra user-specified keywords to exclude
+
+
