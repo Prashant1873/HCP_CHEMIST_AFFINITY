@@ -24,20 +24,23 @@ def write_results(
     """
     os.makedirs(output_dir, exist_ok=True)
     
-    # 1. Save final doctor-chemist candidates (up to 5 closest chemists within 1.0 km)
+    # 1. Save final doctor-chemist candidates (up to final_n closest chemists)
+    final_n = config_data.get('final_n', 5)
+    top_n_candidates_df = candidates_df[candidates_df['air_distance_rank'] <= final_n].copy() if not candidates_df.empty and 'air_distance_rank' in candidates_df.columns else candidates_df.copy()
+    
     final_csv_path = os.path.join(output_dir, "final_doctor_nearest_5_chemists.csv")
     final_xlsx_path = os.path.join(output_dir, "final_doctor_nearest_5_chemists.xlsx")
     
-    logger.info(f"Saving final doctor-chemist mappings ({len(candidates_df)} rows) to {final_csv_path}...")
-    candidates_df.to_csv(final_csv_path, index=False)
+    logger.info(f"Saving final doctor-chemist mappings ({len(top_n_candidates_df)} rows) to {final_csv_path}...")
+    top_n_candidates_df.to_csv(final_csv_path, index=False)
     
     try:
-        candidates_df.to_excel(final_xlsx_path, index=False, sheet_name="Top5_Chemists_Within_1KM")
+        top_n_candidates_df.to_excel(final_xlsx_path, index=False, sheet_name="Top5_Chemists_Within_1KM")
         logger.info(f"Saved Excel format -> {final_xlsx_path}")
     except Exception as e:
         logger.warning(f"Could not save Excel format for candidates: {e}")
         
-    # Also save legacy candidate name for compatibility if needed
+    # Save the full pool of candidates (up to candidate_k) to be read by Phase 2 (road_routing.py)
     legacy_csv = os.path.join(output_dir, "doctor_chemist_candidates_air_distance.csv")
     candidates_df.to_csv(legacy_csv, index=False)
     

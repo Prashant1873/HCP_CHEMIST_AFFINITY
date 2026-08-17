@@ -132,7 +132,7 @@ def find_nearest_chemists(
             
             results_rows.append(pair)
             rank += 1
-            if rank > final_n:
+            if rank > candidate_k:
                 break
                 
         if rank > 1:
